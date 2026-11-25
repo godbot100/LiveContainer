@@ -83,6 +83,46 @@ final class EchoStore: ObservableObject {
         renderer == .echo && gameHasPcShaders ? .echo : .stock
     }
 
+    // MARK: PC meshes
+
+    /// The high-detail PC mesh pak some builds ship. Renaming it to ".disabled" makes the game skip it.
+    private static let pcMeshFiles = ["pakchunkpcmeshes-iosclient_p.pak", "pakchunkpcmeshes-iosclient_p.sig"]
+
+    private func pcMeshCopies(_ name: String) -> (enabled: URL, disabled: URL)? {
+        guard let folder = gameBundle?.appendingPathComponent("cookeddata/fortnitegame/content/paks") else { return nil }
+        return copies(of: name, in: folder)
+    }
+
+    var gameHasPcMeshes: Bool {
+        guard let pak = pcMeshCopies(EchoStore.pcMeshFiles[0]) else { return false }
+        return FileManager.default.fileExists(atPath: pak.enabled.path) || FileManager.default.fileExists(atPath: pak.disabled.path)
+    }
+
+    var pcMeshesEnabled: Bool {
+        guard let pak = pcMeshCopies(EchoStore.pcMeshFiles[0]) else { return false }
+        return FileManager.default.fileExists(atPath: pak.enabled.path)
+    }
+
+    func setPcMeshes(_ enabled: Bool) {
+        let fm = FileManager.default
+        do {
+            for name in EchoStore.pcMeshFiles {
+                guard let file = pcMeshCopies(name) else { continue }
+                let from = enabled ? file.disabled : file.enabled
+                let to = enabled ? file.enabled : file.disabled
+                guard fm.fileExists(atPath: from.path) else { continue }
+                if fm.fileExists(atPath: to.path) {
+                    try fm.removeItem(at: to)
+                }
+                try fm.moveItem(at: from, to: to)
+            }
+            status = enabled ? "PC meshes: on" : "PC meshes: off"
+        } catch {
+            status = error.localizedDescription
+        }
+        objectWillChange.send()
+    }
+
     private var clientFolder: URL {
         if gameCarriesClient, let frameworks = gameFrameworks { return frameworks }
         return tweakFolder

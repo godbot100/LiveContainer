@@ -202,6 +202,18 @@
 				universal.js,
 				EchoIOS.dylib.bin,
 				EchoGfx.dylib.bin,
+				EchoBurbankBig.otf,
+				EchoBurbankSmallBlack.otf,
+				EchoBurbankSmallBold.ttf,
+				EchoPoppins400.ttf,
+				EchoPoppins500.ttf,
+				EchoPoppins600.ttf,
+				EchoPoppins700.ttf,
+				EchoSymbols.ttf,
+				EchoBgHome.jpg,
+				EchoBgBuilds.jpg,
+				EchoBgSettings.jpg,
+				EchoLogo.png,
 			);
 			target = 17DCE99C2C7067EC00731D42 /* LiveContainer */;
 		};

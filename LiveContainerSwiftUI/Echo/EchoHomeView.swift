@@ -2,52 +2,53 @@
 //  EchoHomeView.swift
 //  Echo Launcher
 //
-//  The Echo shell: a navigation rail and the pages of the PC launcher (servers, store, home,
-//  builds, profile, settings). Pages that need the Echo server show an empty state until it is connected.
+//  The Echo shell, laid out like the PC launcher: a floating rail, the hero and news on Home,
+//  Builds, Store, Servers, Profile and Settings, with the friends pill and the music player on top.
 //
 
 import SwiftUI
 
 enum EchoPage: Int, CaseIterable, Identifiable {
-    case servers, store, home, builds, profile, settings
+    case home, builds, store, servers, profile, settings
     var id: Int { rawValue }
 
-    var symbol: String {
+    var icon: EchoIcon {
         switch self {
-        case .servers: return "server.rack"
-        case .store: return "bag.fill"
-        case .home: return "house.fill"
-        case .builds: return "square.grid.2x2.fill"
-        case .profile: return "person.crop.circle.fill"
-        case .settings: return "gearshape.fill"
+        case .home: return .home
+        case .builds: return .builds
+        case .store: return .store
+        case .servers: return .servers
+        case .profile: return .person
+        case .settings: return .settings
         }
     }
 
-    var tint: Color {
+    var art: String {
         switch self {
-        case .servers: return Color(red: 0.75, green: 0.35, blue: 0.15)
-        case .store: return Color(red: 0.25, green: 0.25, blue: 0.30)
-        case .home: return Color(red: 0.20, green: 0.35, blue: 0.85)
-        case .builds: return Color(red: 0.20, green: 0.55, blue: 0.30)
-        case .profile: return Color(red: 0.55, green: 0.20, blue: 0.75)
-        case .settings: return Color(red: 0.15, green: 0.20, blue: 0.80)
+        case .builds: return "EchoBgBuilds"
+        case .settings: return "EchoBgSettings"
+        default: return "EchoBgHome"
         }
     }
 }
 
 enum EchoSettingsPage {
-    case root, mods, game, advanced
+    case root, account, mods, game, appearance, advanced
 }
 
 struct EchoHomeView: View {
     @StateObject private var store = EchoStore()
     @StateObject private var account = EchoAccount()
+    @StateObject private var music = EchoMusic()
     @EnvironmentObject private var sharedModel: SharedModel
+    @AppStorage(EchoTheme.themeKey) private var themeName = "Timeless"
     @State private var page: EchoPage = .home
     @State private var settingsPage: EchoSettingsPage = .root
+    @State private var article: EchoNewsItem?
     @State private var modsTab = 0
     @State private var mods: [EchoMod] = []
     @State private var launchError = ""
+    @State private var showPassword = false
 
     private var game: LCAppModel? {
         sharedModel.apps.first { app in
@@ -61,20 +62,29 @@ struct EchoHomeView: View {
         GeometryReader { proxy in
             let wide = proxy.size.width > proxy.size.height
             ZStack {
-                EchoBackground(tint: page.tint)
+                EchoBackground(art: page.art, remote: page == .home ? article?.image : nil)
                 if wide {
                     HStack(spacing: 0) {
                         rail(vertical: true)
-                        pageContent
+                        pageContent(wide: true)
                     }
                 } else {
                     VStack(spacing: 0) {
-                        pageContent
+                        pageContent(wide: false)
                         rail(vertical: false)
                     }
                 }
             }
+            .overlay(alignment: .topTrailing) {
+                if account.signedIn {
+                    EchoFriendsPill(account: account).padding(.top, 14).padding(.trailing, 20)
+                }
+            }
+            .overlay(alignment: .bottomTrailing) {
+                EchoMusicPlayer(music: music).padding(.bottom, wide ? 14 : 72).padding(.trailing, 20)
+            }
         }
+        .id(themeName)
         .preferredColorScheme(.dark)
         .modifier(EchoHideTabBar())
         .task {
@@ -91,45 +101,36 @@ struct EchoHomeView: View {
     // MARK: rail
 
     private func railButton(_ item: EchoPage) -> some View {
-        Button(action: {
-            page = item
-            if item == .settings { settingsPage = .root }
-        }) {
-            Image(systemName: item.symbol)
-                .font(.system(size: 18, weight: .bold))
-                .foregroundColor(page == item ? .black : .white)
-                .frame(width: 44, height: 44)
-                .background(page == item ? EchoTheme.accent : Color.clear)
-                .clipShape(Circle())
+        EchoIconButton(icon: item.icon, size: 46, active: page == item) {
+            withAnimation(.easeOut(duration: 0.25)) {
+                page = item
+                settingsPage = .root
+                article = nil
+            }
         }
-        .buttonStyle(.plain)
     }
 
     @ViewBuilder
     private func rail(vertical: Bool) -> some View {
-        let main: [EchoPage] = [.servers, .store, .home, .builds, .profile]
+        let main: [EchoPage] = [.home, .builds, .store, .servers]
         if vertical {
-            VStack(spacing: 0) {
-                Spacer()
-                VStack(spacing: 6) {
-                    ForEach(main) { railButton($0) }
-                }
-                .padding(6)
-                .background(EchoTheme.rail)
-                .clipShape(Capsule())
-                Spacer()
+            VStack(spacing: 6) {
+                ForEach(main) { railButton($0) }
+                Spacer().frame(height: 10)
+                railButton(.profile)
                 railButton(.settings)
-                    .padding(.bottom, 16)
             }
+            .padding(6)
+            .echoSurface(radius: 100)
             .padding(.horizontal, 14)
         } else {
             HStack(spacing: 6) {
                 ForEach(main) { railButton($0) }
+                railButton(.profile)
                 railButton(.settings)
             }
             .padding(6)
-            .background(EchoTheme.rail)
-            .clipShape(Capsule())
+            .echoSurface(radius: 100)
             .padding(.bottom, 8)
         }
     }
@@ -137,10 +138,26 @@ struct EchoHomeView: View {
     // MARK: pages
 
     @ViewBuilder
-    private var pageContent: some View {
+    private func pageContent(wide: Bool) -> some View {
         switch page {
-        case .home: homePage
-        case .servers: scrollPage { EchoServersPage(account: account) }
+        case .home:
+            if let article {
+                scrollPage { EchoArticlePage(account: account, item: article, open: { self.article = $0 }, close: { self.article = nil }) }
+            } else if wide {
+                HStack(alignment: .center, spacing: 24) {
+                    hero
+                    EchoHomeNews(account: account, open: { article = $0 })
+                        .frame(maxWidth: 440)
+                }
+                .padding(24)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                scrollPage {
+                    hero
+                    EchoHomeNews(account: account, open: { article = $0 })
+                }
+            }
+        case .servers: scrollPage { EchoServersPage(account: account, openStore: { page = .store }) }
         case .store: scrollPage { EchoStorePage(account: account) }
         case .builds: scrollPage { buildsPage }
         case .profile: scrollPage { EchoProfilePage(account: account) }
@@ -150,24 +167,28 @@ struct EchoHomeView: View {
 
     private func scrollPage<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 16) {
                 content()
             }
             .padding(24)
+            .padding(.top, 20)
         }
     }
 
-    private var homePage: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Spacer()
-            Text("ECHO")
-                .font(EchoTheme.heading(86))
-                .foregroundColor(.white)
-            Text(game == nil ? "FORTNITE 3.6 · NOT INSTALLED" : "FORTNITE 3.6 · READY")
-                .font(EchoTheme.heading(16))
+    private var hero: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                if let logo = EchoTheme.image("EchoLogo", "png") {
+                    Image(uiImage: logo).resizable().scaledToFit().frame(width: 78, height: 78)
+                }
+                Text("ECHO").font(EchoTheme.heading(96)).foregroundColor(.white)
+            }
+            .shadow(color: Color.black.opacity(0.35), radius: 12, y: 4)
+            Text(game == nil ? "SEASON 3 · NOT INSTALLED" : "SEASON 3 · READY TO PLAY")
+                .font(EchoTheme.caps(18))
                 .foregroundColor(.white)
             if !account.signedIn {
-                Button(account.busy ? "SIGNING IN…" : "SIGN IN WITH DISCORD") {
+                Button(account.busy ? "SIGNING IN…" : "SIGN IN") {
                     Task { await account.signIn() }
                 }
                 .buttonStyle(EchoPrimaryButtonStyle())
@@ -176,8 +197,7 @@ struct EchoHomeView: View {
                     Button("Play without signing in") {
                         Task { await play() }
                     }
-                    .font(EchoTheme.label(13))
-                    .foregroundColor(EchoTheme.dim)
+                    .buttonStyle(EchoButtonStyle(kind: .ghost))
                 }
             } else if game != nil {
                 Button("PLAY") {
@@ -191,107 +211,85 @@ struct EchoHomeView: View {
                 .buttonStyle(EchoPrimaryButtonStyle())
             }
             if !launchError.isEmpty {
-                Text(launchError)
-                    .font(EchoTheme.label(13))
-                    .foregroundColor(.red)
+                Text(launchError).font(EchoTheme.label(13)).foregroundColor(EchoTheme.red)
             }
             if !store.status.isEmpty {
-                Text(store.status)
-                    .font(EchoTheme.label(13))
-                    .foregroundColor(EchoTheme.dim)
+                Text(store.status).font(EchoTheme.label(13)).foregroundColor(EchoTheme.dim)
             }
             EchoAccountNotices(account: account)
-            Spacer()
-            EchoSectionTitle(text: "News")
-            EchoNewsStrip(account: account)
         }
-        .padding(24)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    private func actionRow(_ icon: EchoIcon, _ title: String, _ subtitle: String) -> some View {
+        HStack(spacing: 12) {
+            EchoGlyph(icon: icon, size: 24).foregroundColor(EchoTheme.accent)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title.uppercased()).font(EchoTheme.title(16)).foregroundColor(.white)
+                Text(subtitle).font(EchoTheme.label(12)).foregroundColor(EchoTheme.dim)
+            }
+            Spacer()
+            EchoGlyph(icon: .forward, size: 18).foregroundColor(EchoTheme.dim)
+        }
+        .padding(14)
+        .echoSurface()
+    }
+
+    @ViewBuilder
     private var buildsPage: some View {
-        Group {
-            EchoPageHeader(title: "Builds", subtitle: "Manage your builds.")
-            EchoSectionTitle(text: "Your builds")
-            if sharedModel.apps.isEmpty {
-                EchoEmptyState(symbol: "square.grid.2x2.fill", text: "No build is installed yet.")
-            }
-            ForEach(sharedModel.apps, id: \.self) { app in
-                EchoCard {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text((app.appInfo.displayName() ?? "Build").uppercased())
-                                .font(EchoTheme.heading(18))
-                                .foregroundColor(.white)
-                            Text(app.appInfo.bundleIdentifier() ?? "")
-                                .font(EchoTheme.label(12))
-                                .foregroundColor(EchoTheme.dim)
-                        }
-                        Spacer()
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundColor(EchoTheme.owned)
+        EchoPageHeader(title: "Builds", subtitle: "Manage your builds.")
+        if sharedModel.apps.isEmpty {
+            EchoEmptyState(icon: .builds, title: "No builds", text: "No build is installed yet.")
+        } else {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 10)], spacing: 10) {
+                ForEach(sharedModel.apps, id: \.self) { app in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Color.clear
+                            .aspectRatio(0.75, contentMode: .fit)
+                            .overlay(LinearGradient(colors: [EchoTheme.accent.opacity(0.55), EchoTheme.tint], startPoint: .top, endPoint: .bottom))
+                            .overlay(Text("3.6").font(EchoTheme.heading(54)).foregroundColor(.white))
+                            .overlay(alignment: .topTrailing) { EchoTag(text: "Installed", badge: true).padding(8) }
+                        Text((app.appInfo.displayName() ?? "Build").uppercased())
+                            .font(EchoTheme.title(15)).foregroundColor(.white).lineLimit(1)
+                            .padding(.horizontal, 10)
+                        Text(app.appInfo.bundleIdentifier() ?? "")
+                            .font(EchoTheme.label(10)).foregroundColor(EchoTheme.dim).lineLimit(1)
+                            .padding(.horizontal, 10).padding(.bottom, 10)
                     }
+                    .echoSurface(radius: EchoTheme.radiusLarge)
                 }
             }
-            EchoSectionTitle(text: "Add a build")
-            Button(action: { sharedModel.selectedTab = .apps }) {
-                EchoCard {
-                    Label {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Import from device").font(EchoTheme.label(15)).foregroundColor(.white)
-                            Text("Opens the app list. Tap + there and choose the Fortnite 3.6 IPA.")
-                                .font(EchoTheme.label(12)).foregroundColor(EchoTheme.dim)
-                        }
-                    } icon: {
-                        Image(systemName: "plus.circle.fill").foregroundColor(EchoTheme.accent)
-                    }
-                }
-            }
-            .buttonStyle(.plain)
-            Button(action: { Task { await store.installGame() } }) {
-                EchoCard {
-                    Label {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Download build").font(EchoTheme.label(15)).foregroundColor(.white)
-                            Text(store.manifest?.game == nil ? "No build is published on the Echo server yet." : "Fortnite 3.6 from the Echo server.")
-                                .font(EchoTheme.label(12)).foregroundColor(EchoTheme.dim)
-                        }
-                    } icon: {
-                        Image(systemName: "arrow.down.circle.fill").foregroundColor(EchoTheme.accent)
-                    }
-                }
-            }
-            .buttonStyle(.plain)
-            .disabled(store.busy || store.manifest?.game == nil)
-            if store.busy {
-                ProgressView()
-            }
+        }
+        EchoSectionTitle(text: "Add a build")
+        Button(action: { sharedModel.selectedTab = .apps }) {
+            actionRow(.add, "Import from device", "Opens the app list. Tap + there and choose the Fortnite 3.6 IPA.")
+        }
+        .buttonStyle(.plain)
+        Button(action: { Task { await store.installGame() } }) {
+            actionRow(.download, "Download build", store.manifest?.game == nil ? "No build is published on the Echo server yet." : "Fortnite 3.6 from the Echo server.")
+        }
+        .buttonStyle(.plain)
+        .disabled(store.busy || store.manifest?.game == nil)
+        if store.busy {
+            ProgressView().tint(EchoTheme.accent)
         }
     }
 
     // MARK: settings
 
-    private func settingsCard(_ title: String, _ subtitle: String, _ symbol: String, _ target: EchoSettingsPage) -> some View {
+    private func settingsTile(_ title: String, _ subtitle: String, _ icon: EchoIcon, _ target: EchoSettingsPage) -> some View {
         Button(action: {
-            settingsPage = target
+            withAnimation(.easeOut(duration: 0.25)) { settingsPage = target }
             if target == .mods { reloadMods() }
         }) {
-            EchoCard {
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Image(systemName: symbol)
-                            .font(.system(size: 16, weight: .bold))
-                            .foregroundColor(EchoTheme.accent)
-                            .frame(width: 36, height: 36)
-                            .background(Color.white.opacity(0.10))
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                        Text(title.uppercased()).font(EchoTheme.heading(17)).foregroundColor(.white)
-                        Text(subtitle).font(EchoTheme.label(12)).foregroundColor(EchoTheme.dim)
-                    }
-                    Spacer()
-                    Image(systemName: "arrow.right").foregroundColor(EchoTheme.dim)
-                }
+            VStack(alignment: .leading, spacing: 8) {
+                EchoGlyph(icon: icon, size: 26).foregroundColor(EchoTheme.accent)
+                Text(title.uppercased()).font(EchoTheme.title(18)).foregroundColor(.white)
+                Text(subtitle).font(EchoTheme.label(12)).foregroundColor(EchoTheme.dim).lineLimit(2)
             }
+            .padding(16)
+            .frame(maxWidth: .infinity, minHeight: 120, alignment: .topLeading)
+            .echoSurface(radius: EchoTheme.radiusLarge)
         }
         .buttonStyle(.plain)
     }
@@ -299,17 +297,29 @@ struct EchoHomeView: View {
     private func backHeader(_ title: String, _ subtitle: String) -> some View {
         HStack(alignment: .top) {
             EchoPageHeader(title: title, subtitle: subtitle)
-            Button(action: { settingsPage = .root }) {
-                Label("Back", systemImage: "chevron.left")
-                    .font(EchoTheme.label(13))
+            Button(action: { withAnimation(.easeOut(duration: 0.25)) { settingsPage = .root } }) {
+                Label { Text("Settings") } icon: { EchoGlyph(icon: .back, size: 16) }
+                    .font(EchoTheme.label(13, weight: 600))
                     .foregroundColor(.white)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
-                    .background(EchoTheme.card)
-                    .clipShape(Capsule())
+                    .echoSurface(radius: 100)
             }
             .buttonStyle(.plain)
         }
+    }
+
+    private func copyRow(_ title: String, _ value: String, shown: String) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(EchoTheme.label(12)).foregroundColor(EchoTheme.dim)
+                Text(shown).font(EchoTheme.label(15, weight: 600)).foregroundColor(.white).lineLimit(1)
+            }
+            Spacer()
+            EchoIconButton(icon: .copy, size: 36) { UIPasteboard.general.string = value }
+        }
+        .padding(14)
+        .echoSurface()
     }
 
     @ViewBuilder
@@ -317,29 +327,54 @@ struct EchoHomeView: View {
         switch settingsPage {
         case .root:
             EchoPageHeader(title: "Settings", subtitle: "Your account, the launcher and how it looks.")
-            settingsCard("Mods", "Optional add-ons, applied the next time you launch", "star.fill", .mods)
-            settingsCard("Game", "How Echo starts up and behaves in game", "gamecontroller.fill", .game)
-            settingsCard("Advanced", "Certificates, app list and the LiveContainer settings", "wrench.and.screwdriver.fill", .advanced)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 200), spacing: 10)], spacing: 10) {
+                settingsTile("Account", "Sign-in and your game login", .person, .account)
+                settingsTile("Mods", "Optional add-ons, applied the next time you launch", .star, .mods)
+                settingsTile("Game", "How Echo starts up and behaves in game", .game, .game)
+                settingsTile("Appearance", "The launcher's colour theme", .palette, .appearance)
+                settingsTile("Advanced", "Certificates, app list and the LiveContainer settings", .build, .advanced)
+            }
+        case .account:
+            backHeader("Account", "Sign-in and your game login")
+            if !account.signedIn {
+                EchoSignInPrompt(account: account, text: "Sign in with the Discord account you use for Echo.")
+            } else {
+                copyRow("Signed in as", account.username, shown: account.username)
+                if !account.gameEmail.isEmpty {
+                    EchoSectionTitle(text: "Game sign-in")
+                    copyRow("Email", account.gameEmail, shown: account.gameEmail)
+                    copyRow("Password", account.gamePassword, shown: showPassword ? account.gamePassword : String(repeating: "•", count: 10))
+                    Button(showPassword ? "Hide password" : "Show password") {
+                        showPassword.toggle()
+                    }
+                    .buttonStyle(EchoButtonStyle(kind: .ghost))
+                }
+                Button("Sign out") {
+                    account.signOut()
+                }
+                .buttonStyle(EchoButtonStyle(kind: .danger))
+                EchoAccountNotices(account: account)
+            }
         case .mods:
             backHeader("Mods", "Optional add-ons, applied the next time you launch")
             EchoPillPicker(options: ["Installed \(mods.count)", "Marketplace"], selection: $modsTab)
             if modsTab == 0 {
                 if mods.isEmpty {
-                    EchoEmptyState(symbol: "star.fill", text: "Nothing is installed.")
+                    EchoEmptyState(icon: .star, title: "No mods", text: "Nothing is installed.")
                 }
                 ForEach(mods) { mod in
-                    EchoCard {
-                        Toggle(isOn: Binding(get: { mod.enabled }, set: { setMod(mod, enabled: $0) })) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(mod.title.uppercased()).font(EchoTheme.heading(16)).foregroundColor(mod.enabled ? .white : EchoTheme.dim)
-                                Text("Applied next launch").font(EchoTheme.label(12)).foregroundColor(EchoTheme.dim)
-                            }
+                    Toggle(isOn: Binding(get: { mod.enabled }, set: { setMod(mod, enabled: $0) })) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(mod.title.uppercased()).font(EchoTheme.title(16)).foregroundColor(mod.enabled ? .white : EchoTheme.dim)
+                            Text("Applied next launch").font(EchoTheme.label(12)).foregroundColor(EchoTheme.dim)
                         }
-                        .tint(EchoTheme.accent)
                     }
+                    .tint(EchoTheme.accent)
+                    .padding(14)
+                    .echoSurface()
                 }
             } else {
-                EchoEmptyState(symbol: "square.grid.2x2.fill", text: "Nothing for iOS is published in the Echo mod catalog yet.")
+                EchoEmptyState(icon: .builds, title: "Marketplace", text: "Nothing for iOS is published in the Echo mod catalog yet.")
             }
         case .game:
             backHeader("Game", "How Echo starts up and behaves in game")
@@ -349,21 +384,55 @@ struct EchoHomeView: View {
                 set: { store.setRenderer(EchoRenderer.allCases[$0]); reloadMods() }))
             Text("Stock uses the game's own iOS shaders. Echo loads EchoGfx and the converted PC shaders, which need a game build that includes the shader paks. Takes effect the next time the game starts.")
                 .font(EchoTheme.label(12)).foregroundColor(EchoTheme.dim)
-            EchoSectionTitle(text: "Server")
-            EchoCard {
-                TextField("https://", text: $store.manifestAddress)
-                    .keyboardType(.URL)
-                    .textInputAutocapitalization(.never)
-                    .disableAutocorrection(true)
-                    .foregroundColor(.white)
+            if store.gameHasPcMeshes {
+                EchoSectionTitle(text: "Meshes")
+                Toggle(isOn: Binding(get: { store.pcMeshesEnabled }, set: { store.setPcMeshes($0) })) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("HIGH-QUALITY PC MESHES").font(EchoTheme.title(16)).foregroundColor(.white)
+                        Text("Off uses the game's own iOS meshes, which are lighter. Takes effect the next time the game starts.")
+                            .font(EchoTheme.label(12)).foregroundColor(EchoTheme.dim)
+                    }
+                }
+                .tint(EchoTheme.accent)
+                .padding(14)
+                .echoSurface()
             }
-            Button("CHECK FOR UPDATES") {
+            EchoSectionTitle(text: "Server")
+            TextField("https://", text: $store.manifestAddress)
+                .keyboardType(.URL)
+                .textInputAutocapitalization(.never)
+                .disableAutocorrection(true)
+                .font(EchoTheme.label(14))
+                .foregroundColor(.white)
+                .padding(14)
+                .echoSurface()
+            Button("Check for updates") {
                 Task { await prepareClient(checkServer: true) }
             }
-            .buttonStyle(EchoPrimaryButtonStyle())
+            .buttonStyle(EchoButtonStyle())
             .disabled(store.busy)
             if !store.status.isEmpty {
                 Text(store.status).font(EchoTheme.label(13)).foregroundColor(EchoTheme.dim)
+            }
+        case .appearance:
+            backHeader("Appearance", "The launcher's colour theme")
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), spacing: 10)], spacing: 10) {
+                ForEach(EchoPalette.all, id: \.name) { palette in
+                    Button(action: {
+                        EchoTheme.palette = palette
+                        themeName = palette.name
+                    }) {
+                        HStack(spacing: 10) {
+                            Circle().fill(palette.accent).frame(width: 26, height: 26)
+                                .overlay(Circle().stroke(Color.white, lineWidth: palette.name == EchoTheme.palette.name ? 2 : 0))
+                            Text(palette.name).font(EchoTheme.label(14, weight: 600)).foregroundColor(.white)
+                            Spacer()
+                        }
+                        .padding(12)
+                        .echoSurface()
+                    }
+                    .buttonStyle(.plain)
+                }
             }
         case .advanced:
             backHeader("Advanced", "Certificates, app list and the LiveContainer settings")
@@ -375,16 +444,7 @@ struct EchoHomeView: View {
 
     private func advancedButton(_ title: String, _ subtitle: String, _ tab: LCTabIdentifier) -> some View {
         Button(action: { sharedModel.selectedTab = tab }) {
-            EchoCard {
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(title.uppercased()).font(EchoTheme.heading(16)).foregroundColor(.white)
-                        Text(subtitle).font(EchoTheme.label(12)).foregroundColor(EchoTheme.dim)
-                    }
-                    Spacer()
-                    Image(systemName: "arrow.right").foregroundColor(EchoTheme.dim)
-                }
-            }
+            actionRow(.build, title, subtitle)
         }
         .buttonStyle(.plain)
     }
@@ -420,6 +480,7 @@ struct EchoHomeView: View {
     private func play() async {
         guard let game else { return }
         launchError = ""
+        music.stop()
         await prepareClient(checkServer: false)
         do {
             try await game.runApp()

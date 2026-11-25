@@ -96,6 +96,7 @@ struct EchoNewsItem: Identifiable {
     var body: String
     var image: URL?
     var pinned: Bool
+    var date: String
 }
 
 struct EchoServerRow: Identifiable {
@@ -104,7 +105,43 @@ struct EchoServerRow: Identifiable {
     var region: String
     var status: String
     var players: Int
+    var bots: Int
+    var alive: Int?
+    var image: URL?
+    var startedAt: Date?
     var idle: Bool
+}
+
+struct EchoFriend: Identifiable {
+    var id: String
+    var name: String
+    var status: String
+    var skin: URL?
+    var online: Bool { status != "offline" }
+}
+
+struct EchoLockerSection: Identifiable {
+    var id: String
+    var label: String
+    var items: [EchoShopItem]
+}
+
+struct EchoStat: Identifiable {
+    var id: String
+    var label: String
+    var value: String
+}
+
+struct EchoProfile {
+    var accountId: String
+    var username: String
+    var skin: URL?
+    var level: Int?
+    var tier: Int?
+    var friendCount: Int
+    var relationship: String
+    var stats: [EchoStat]
+    var locker: [EchoLockerSection]
 }
 
 struct EchoShopItem: Identifiable {
@@ -146,6 +183,8 @@ final class EchoAccount: ObservableObject {
     @Published private(set) var playersInQueue = 0
     @Published private(set) var shopFeatured: [EchoShopItem] = []
     @Published private(set) var shopDaily: [EchoShopItem] = []
+    @Published private(set) var friends: [EchoFriend] = []
+    @Published private(set) var ownProfile: EchoProfile?
 
     private var token: String?
     private var webSession: ASWebAuthenticationSession?
@@ -243,6 +282,8 @@ final class EchoAccount: ObservableObject {
         servers = []
         shopFeatured = []
         shopDaily = []
+        friends = []
+        ownProfile = nil
     }
 
     private func remember(username: String, avatar: String, accountId: String) {
@@ -306,6 +347,68 @@ final class EchoAccount: ObservableObject {
         await refreshNews()
         await refreshServers()
         await refreshShop()
+        await refreshFriends()
+        if !accountId.isEmpty {
+            ownProfile = await profile(of: accountId)
+        }
+    }
+
+    func refreshFriends() async {
+        guard let rows = await get("/launcher/friends") as? [[String: Any]] else { return }
+        friends = rows.compactMap { row in
+            guard let id = EchoAccount.text(row["accountId"]) else { return nil }
+            return EchoFriend(
+                id: id,
+                name: row["username"] as? String ?? id,
+                status: row["status"] as? String ?? "offline",
+                skin: EchoAccount.url(row["skinUrl"]))
+        }
+        .sorted { ($0.online ? 0 : 1, $0.name.lowercased()) < ($1.online ? 0 : 1, $1.name.lowercased()) }
+    }
+
+    func profile(of accountId: String) async -> EchoProfile? {
+        guard accountId.range(of: "^[A-Za-z0-9_-]{1,64}$", options: .regularExpression) != nil,
+              let fields = await get("/launcher/players/\(accountId)/profile") as? [String: Any] else { return nil }
+        let levels = fields["levels"] as? [String: Any] ?? [:]
+        let sections = fields["locker"] as? [[String: Any]] ?? []
+        return EchoProfile(
+            accountId: accountId,
+            username: fields["username"] as? String ?? "",
+            skin: EchoAccount.url(fields["skinUrl"]),
+            level: EchoAccount.int(levels["level"]),
+            tier: EchoAccount.int(levels["tier"]),
+            friendCount: EchoAccount.int(fields["friendCount"]) ?? 0,
+            relationship: fields["relationship"] as? String ?? "",
+            stats: EchoAccount.stats(fields["stats"] as? [String: Any] ?? [:], prefix: ""),
+            locker: sections.enumerated().map { index, section in
+                let label = section["label"] as? String ?? "Items"
+                return EchoLockerSection(id: "\(index)-\(label)", label: label,
+                                         items: EchoAccount.shopItems(section["items"] as? [[String: Any]] ?? [], prefix: "locker-\(index)"))
+            })
+    }
+
+    /// Every number in the stats object becomes a tile; nested groups (per mode) are flattened one level.
+    private static func stats(_ fields: [String: Any], prefix: String) -> [EchoStat] {
+        var found: [EchoStat] = []
+        for key in fields.keys.sorted() {
+            let label = (prefix.isEmpty ? "" : prefix + " ") + readable(key)
+            if let group = fields[key] as? [String: Any] {
+                if prefix.isEmpty { found += stats(group, prefix: readable(key)) }
+            } else if let number = fields[key] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() {
+                let value = number.doubleValue
+                found.append(EchoStat(id: label, label: label, value: value == value.rounded() ? String(Int(value)) : String(format: "%.2f", value)))
+            }
+        }
+        return found
+    }
+
+    private static func readable(_ key: String) -> String {
+        var words = ""
+        for character in key {
+            if character.isUppercase, !words.isEmpty { words += " " }
+            words.append(character == "_" ? " " : character)
+        }
+        return words.prefix(1).uppercased() + words.dropFirst().lowercased()
     }
 
     func refreshProfile() async {
@@ -327,7 +430,8 @@ final class EchoAccount: ObservableObject {
                 title: title,
                 body: row["body"] as? String ?? "",
                 image: EchoAccount.url(row["image"]),
-                pinned: row["pinned"] as? Bool ?? false)
+                pinned: row["pinned"] as? Bool ?? false,
+                date: String((row["date"] as? String ?? "").prefix(10)))
         }
     }
 
@@ -341,6 +445,10 @@ final class EchoAccount: ObservableObject {
                 region: row["region"] as? String ?? "",
                 status: row["status"] as? String ?? "",
                 players: EchoAccount.int(row["playerCount"]) ?? 0,
+                bots: EchoAccount.int(row["botCount"]) ?? 0,
+                alive: EchoAccount.int(row["aliveCount"]),
+                image: EchoAccount.url(row["playlistImage"]),
+                startedAt: (row["startedAt"] as? String).flatMap { ISO8601DateFormatter.echo.date(from: $0) },
                 idle: row["idle"] as? Bool ?? false)
         }
         let summary = fields["summary"] as? [String: Any] ?? [:]
@@ -383,4 +491,12 @@ final class EchoAccount: ObservableObject {
         guard let text = value as? String, text.lowercased().hasPrefix("https://") else { return nil }
         return URL(string: text)
     }
+}
+
+extension ISO8601DateFormatter {
+    static let echo: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
 }
