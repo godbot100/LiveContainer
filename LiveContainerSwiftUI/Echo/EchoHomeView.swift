@@ -25,10 +25,15 @@ struct EchoHomeView: View {
                             .disabled(store.busy)
                         }
                     }
-                    Button("Check for updates") {
-                        Task { await store.refresh() }
+                    if store.manifestAddress.isEmpty {
+                        Text("No server is set, so this launcher uses its built-in EchoIOS. Install the game from the Apps tab: tap +, then choose the Fortnite 3.6 IPA.")
+                            .font(.footnote)
+                    } else {
+                        Button("Check for updates") {
+                            Task { await store.refresh() }
+                        }
+                        .disabled(store.busy)
                     }
-                    .disabled(store.busy)
                     if !store.status.isEmpty {
                         Text(store.status).font(.footnote).foregroundColor(.secondary)
                     }
@@ -55,6 +60,7 @@ struct EchoHomeView: View {
         }
         .navigationViewStyle(StackNavigationViewStyle())
         .task {
+            store.installEmbedded()
             if !store.manifestAddress.isEmpty {
                 await store.refresh()
             }

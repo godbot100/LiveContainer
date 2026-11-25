@@ -15,6 +15,15 @@ final class EchoStore: ObservableObject {
     static let manifestKey = "EchoManifestURL"
     static let rendererKey = "EchoRenderer"
     static let installedGameKey = "EchoInstalledGameSHA256"
+    static let embeddedKeyPrefix = "EchoEmbeddedSHA256:"
+
+    /// Client libraries shipped inside the launcher, used until a manifest supplies newer ones.
+    /// Stored in the app bundle as "<name>.bin" so the build does not treat them as code to link.
+    struct EmbeddedFile {
+        var name: String
+        var renderer: String?
+    }
+    static let embeddedFiles = [EmbeddedFile(name: "EchoIOS.dylib", renderer: nil)]
 
     @Published var manifestAddress: String = UserDefaults.standard.string(forKey: EchoStore.manifestKey) ?? ""
     @Published var renderer: EchoRenderer = EchoRenderer(rawValue: UserDefaults.standard.string(forKey: EchoStore.rendererKey) ?? "") ?? .echo
@@ -26,6 +35,47 @@ final class EchoStore: ObservableObject {
     var gameNeedsInstall: Bool {
         guard let game = manifest?.game else { return false }
         return UserDefaults.standard.string(forKey: EchoStore.installedGameKey)?.lowercased() != game.sha256.lowercased()
+    }
+
+    /// Name and renderer tag of every client library this launcher manages, embedded or from the manifest.
+    private var managedClientFiles: [(name: String, renderer: String?)] {
+        var files: [(name: String, renderer: String?)] = EchoStore.embeddedFiles.map { ($0.name, $0.renderer) }
+        for file in manifest?.client ?? [] where !files.contains(where: { $0.name == file.name }) {
+            files.append((file.name, file.renderer))
+        }
+        return files
+    }
+
+    /// Copies the libraries shipped in the launcher into the tweak folder when this launcher build has
+    /// not installed them yet. A copy the manifest downloaded later is replaced only by a newer launcher build.
+    func installEmbedded() {
+        let fm = FileManager.default
+        do {
+            try fm.createDirectory(at: tweakFolder, withIntermediateDirectories: true)
+            for file in EchoStore.embeddedFiles {
+                guard let source = Bundle.main.url(forResource: file.name, withExtension: "bin") else {
+                    status = "\(file.name) is missing from this launcher build"
+                    continue
+                }
+                let key = EchoStore.embeddedKeyPrefix + file.name
+                let embeddedHash = try EchoStore.sha256(of: source)
+                let enabled = tweakFolder.appendingPathComponent(file.name)
+                let disabled = tweakFolder.appendingPathComponent(file.name + ".disabled")
+                let present = fm.fileExists(atPath: enabled.path) || fm.fileExists(atPath: disabled.path)
+                if present, UserDefaults.standard.string(forKey: key) == embeddedHash {
+                    continue
+                }
+                for old in [enabled, disabled] where fm.fileExists(atPath: old.path) {
+                    try fm.removeItem(at: old)
+                }
+                try fm.copyItem(at: source, to: enabled)
+                UserDefaults.standard.set(embeddedHash, forKey: key)
+                status = "Installed the built-in \(file.name)"
+            }
+            try applyRenderer()
+        } catch {
+            status = error.localizedDescription
+        }
     }
 
     func saveAddress() {
@@ -115,9 +165,8 @@ final class EchoStore: ObservableObject {
 
     /// Libraries tagged for the other renderer are renamed to ".disabled", which TweakLoader skips.
     private func applyRenderer() throws {
-        guard let manifest else { return }
         let fm = FileManager.default
-        for file in manifest.client ?? [] {
+        for file in managedClientFiles {
             let name = try safeName(file.name)
             let enabled = tweakFolder.appendingPathComponent(name)
             let disabled = tweakFolder.appendingPathComponent(name + ".disabled")

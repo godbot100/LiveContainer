@@ -43,6 +43,7 @@ when that renderer is selected; nothing is installed while the game is running.
 - [x] Bundle identifier rename (com.godbot100.echolauncher)
 - [ ] URL scheme rename
 - [x] Echo tab: manifest check, client library updates, game IPA download with integrity check
+- [x] Built-in EchoIOS (Resources/EchoIOS.dylib.bin) installed into the tweak folder until a manifest supplies one
 - [ ] Paks, command line, locking the app list to the one game
 - [x] Renderer setting (switches the tagged client libraries)
 - [ ] Mods
