@@ -2,8 +2,15 @@
 //  EchoStore.swift
 //  Echo Launcher
 //
-//  Fetches the manifest, keeps the client libraries in the global tweak folder in step with it,
-//  and hands the game IPA to LiveContainer's own installer.
+//  Keeps the Echo client libraries (EchoIOS, and EchoGfx for the PC-shader renderer) in place for the
+//  installed game, from the copies shipped in this launcher or from the server manifest, and hands the
+//  game IPA to LiveContainer's own installer.
+//
+//  Where the libraries live depends on the game build:
+//  - A build whose executable already loads Frameworks/EchoIOS.dylib (every Echo test IPA): the libraries
+//    inside the installed game's Frameworks folder are the ones that load, so they are managed there.
+//    EchoGfx is loaded weakly by EchoIOS, so renaming it to ".disabled" is what switches to the stock renderer.
+//  - A plain build: the libraries go in LiveContainer's global tweak folder, where ".disabled" is skipped too.
 //
 
 import Foundation
@@ -16,6 +23,8 @@ final class EchoStore: ObservableObject {
     static let rendererKey = "EchoRenderer"
     static let installedGameKey = "EchoInstalledGameSHA256"
     static let embeddedKeyPrefix = "EchoEmbeddedSHA256:"
+    static let rendererArgument = "-metalmrt"
+    static let embeddedGfxSettings = "3 2 1\n"
 
     /// Client libraries shipped inside the launcher, used until a manifest supplies newer ones.
     /// Stored in the app bundle as "<name>.bin" so the build does not treat them as code to link.
@@ -23,7 +32,10 @@ final class EchoStore: ObservableObject {
         var name: String
         var renderer: String?
     }
-    static let embeddedFiles = [EmbeddedFile(name: "EchoIOS.dylib", renderer: nil)]
+    static let embeddedFiles = [
+        EmbeddedFile(name: "EchoIOS.dylib", renderer: nil),
+        EmbeddedFile(name: "EchoGfx.dylib", renderer: "echo"),
+    ]
 
     @Published var manifestAddress: String = UserDefaults.standard.string(forKey: EchoStore.manifestKey) ?? ""
     @Published var renderer: EchoRenderer = EchoRenderer(rawValue: UserDefaults.standard.string(forKey: EchoStore.rendererKey) ?? "") ?? .echo
@@ -32,9 +44,43 @@ final class EchoStore: ObservableObject {
     @Published var busy = false
     @Published var progress: Double = 0
 
+    /// The installed game's bundle folder, set by the view. nil while no game is installed.
+    var gameBundle: URL?
+
     var gameNeedsInstall: Bool {
         guard let game = manifest?.game else { return false }
         return UserDefaults.standard.string(forKey: EchoStore.installedGameKey)?.lowercased() != game.sha256.lowercased()
+    }
+
+    // MARK: locations
+
+    private var tweakFolder: URL { LCPath.tweakPath }
+
+    private var gameFrameworks: URL? {
+        gameBundle?.appendingPathComponent("Frameworks")
+    }
+
+    /// True when the game build loads EchoIOS from its own Frameworks folder.
+    var gameCarriesClient: Bool {
+        guard let frameworks = gameFrameworks else { return false }
+        return FileManager.default.fileExists(atPath: frameworks.appendingPathComponent("EchoIOS.dylib").path)
+    }
+
+    /// True when the installed build includes the converted PC shader pak EchoGfx needs.
+    var gameHasPcShaders: Bool {
+        guard let bundle = gameBundle else { return false }
+        let pak = bundle.appendingPathComponent("cookeddata/fortnitegame/content/paks/pakchunkzmetalmrt-iosclient_p.pak")
+        return FileManager.default.fileExists(atPath: pak.path)
+    }
+
+    /// The renderer that will really be used: the PC-shader renderer only on a build that has its shaders.
+    var effectiveRenderer: EchoRenderer {
+        renderer == .echo && gameHasPcShaders ? .echo : .stock
+    }
+
+    private var clientFolder: URL {
+        if gameCarriesClient, let frameworks = gameFrameworks { return frameworks }
+        return tweakFolder
     }
 
     /// Name and renderer tag of every client library this launcher manages, embedded or from the manifest.
@@ -46,37 +92,68 @@ final class EchoStore: ObservableObject {
         return files
     }
 
-    /// Copies the libraries shipped in the launcher into the tweak folder when this launcher build has
-    /// not installed them yet. A copy the manifest downloaded later is replaced only by a newer launcher build.
-    func installEmbedded() {
+    private func copies(of name: String, in folder: URL) -> (enabled: URL, disabled: URL) {
+        (folder.appendingPathComponent(name), folder.appendingPathComponent(name + ".disabled"))
+    }
+
+    // MARK: built-in libraries
+
+    /// Puts the libraries shipped in the launcher in place. Returns true when a file inside the game
+    /// bundle was added, which means the game needs signing again before it can start without JIT.
+    @discardableResult
+    func installEmbedded() -> Bool {
         let fm = FileManager.default
+        var changedGame = false
         do {
-            try fm.createDirectory(at: tweakFolder, withIntermediateDirectories: true)
+            let inGame = gameCarriesClient
+            let folder = clientFolder
+            try fm.createDirectory(at: folder, withIntermediateDirectories: true)
             for file in EchoStore.embeddedFiles {
                 guard let source = Bundle.main.url(forResource: file.name, withExtension: "bin") else {
                     status = "\(file.name) is missing from this launcher build"
                     continue
                 }
+                let target = copies(of: file.name, in: folder)
+                let present = fm.fileExists(atPath: target.enabled.path) || fm.fileExists(atPath: target.disabled.path)
                 let key = EchoStore.embeddedKeyPrefix + file.name
-                let embeddedHash = try EchoStore.sha256(of: source)
-                let enabled = tweakFolder.appendingPathComponent(file.name)
-                let disabled = tweakFolder.appendingPathComponent(file.name + ".disabled")
-                let present = fm.fileExists(atPath: enabled.path) || fm.fileExists(atPath: disabled.path)
-                if present, UserDefaults.standard.string(forKey: key) == embeddedHash {
-                    continue
+                if inGame {
+                    // the build brought its own copy: keep it, and drop any copy this launcher put in the tweak folder
+                    let stray = copies(of: file.name, in: tweakFolder)
+                    if UserDefaults.standard.string(forKey: key) != nil {
+                        for old in [stray.enabled, stray.disabled] where fm.fileExists(atPath: old.path) {
+                            try fm.removeItem(at: old)
+                        }
+                        UserDefaults.standard.removeObject(forKey: key)
+                    }
+                    if present { continue }
+                    try fm.copyItem(at: source, to: target.enabled)
+                    changedGame = true
+                    status = "Added the built-in \(file.name) to the game"
+                } else {
+                    let embeddedHash = try EchoStore.sha256(of: source)
+                    if present, UserDefaults.standard.string(forKey: key) == embeddedHash { continue }
+                    for old in [target.enabled, target.disabled] where fm.fileExists(atPath: old.path) {
+                        try fm.removeItem(at: old)
+                    }
+                    try fm.copyItem(at: source, to: target.enabled)
+                    UserDefaults.standard.set(embeddedHash, forKey: key)
+                    status = "Installed the built-in \(file.name)"
                 }
-                for old in [enabled, disabled] where fm.fileExists(atPath: old.path) {
-                    try fm.removeItem(at: old)
+            }
+            if let bundle = gameBundle {
+                let settings = bundle.appendingPathComponent("echo-gfx.ini")
+                if !fm.fileExists(atPath: settings.path) {
+                    try EchoStore.embeddedGfxSettings.write(to: settings, atomically: true, encoding: .utf8)
                 }
-                try fm.copyItem(at: source, to: enabled)
-                UserDefaults.standard.set(embeddedHash, forKey: key)
-                status = "Installed the built-in \(file.name)"
             }
             try applyRenderer()
         } catch {
             status = error.localizedDescription
         }
+        return changedGame
     }
+
+    // MARK: renderer
 
     func saveAddress() {
         UserDefaults.standard.set(manifestAddress.trimmingCharacters(in: .whitespacesAndNewlines), forKey: EchoStore.manifestKey)
@@ -87,10 +164,49 @@ final class EchoStore: ObservableObject {
         UserDefaults.standard.set(value.rawValue, forKey: EchoStore.rendererKey)
         do {
             try applyRenderer()
-            status = "Renderer: \(value.title)"
+            status = value == .echo && gameBundle != nil && !gameHasPcShaders
+                ? "This build has no PC shader paks, so it stays on the stock renderer"
+                : "Renderer: \(value.title)"
         } catch {
             status = error.localizedDescription
         }
+    }
+
+    /// Libraries tagged for the other renderer are renamed to ".disabled", and the game's command line
+    /// gets or loses the PC-shader renderer argument to match.
+    private func applyRenderer() throws {
+        let fm = FileManager.default
+        let folder = clientFolder
+        for file in managedClientFiles {
+            let name = try safeName(file.name)
+            let target = copies(of: name, in: folder)
+            let wanted = file.renderer == nil || file.renderer == effectiveRenderer.rawValue
+            if wanted, fm.fileExists(atPath: target.disabled.path), !fm.fileExists(atPath: target.enabled.path) {
+                try fm.moveItem(at: target.disabled, to: target.enabled)
+            } else if !wanted, fm.fileExists(atPath: target.enabled.path) {
+                if fm.fileExists(atPath: target.disabled.path) {
+                    try fm.removeItem(at: target.disabled)
+                }
+                try fm.moveItem(at: target.enabled, to: target.disabled)
+            }
+        }
+        try applyCommandLine()
+    }
+
+    private func applyCommandLine() throws {
+        guard let file = gameBundle?.appendingPathComponent("ue4commandline.txt"),
+              FileManager.default.fileExists(atPath: file.path) else { return }
+        let current = try String(contentsOf: file, encoding: .utf8)
+        var words = current.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\r" }).map(String.init)
+        let has = words.contains(EchoStore.rendererArgument)
+        if effectiveRenderer == .echo, !has {
+            words.append(EchoStore.rendererArgument)
+        } else if effectiveRenderer == .stock, has {
+            words.removeAll { $0 == EchoStore.rendererArgument }
+        } else {
+            return
+        }
+        try words.joined(separator: " ").write(to: file, atomically: true, encoding: .utf8)
     }
 
     // MARK: manifest
@@ -109,8 +225,10 @@ final class EchoStore: ObservableObject {
         return name
     }
 
-    func refresh() async {
-        guard !busy else { return }
+    /// Returns true when a library inside the game bundle was replaced (the game then needs signing again).
+    @discardableResult
+    func refresh() async -> Bool {
+        guard !busy else { return false }
         busy = true
         defer { busy = false }
         do {
@@ -128,58 +246,41 @@ final class EchoStore: ObservableObject {
                 throw EchoError.message("This launcher is too old for the manifest (version \(decoded.version))")
             }
             manifest = decoded
-            try await syncClient(decoded)
+            let changedGame = try await syncClient(decoded)
             status = decoded.game == nil ? "The server has no game published yet" : (gameNeedsInstall ? "Game install needed" : "Up to date")
+            return changedGame
         } catch {
             status = error.localizedDescription
+            return false
         }
     }
 
-    // MARK: client libraries (global tweak folder)
-
-    private var tweakFolder: URL { LCPath.tweakPath }
-
-    private func syncClient(_ manifest: EchoManifest) async throws {
+    private func syncClient(_ manifest: EchoManifest) async throws -> Bool {
         let fm = FileManager.default
-        try fm.createDirectory(at: tweakFolder, withIntermediateDirectories: true)
+        let inGame = gameCarriesClient
+        let folder = clientFolder
+        var changedGame = false
+        try fm.createDirectory(at: folder, withIntermediateDirectories: true)
         let files = manifest.client ?? []
         for (index, file) in files.enumerated() {
             let name = try safeName(file.name)
-            let enabled = tweakFolder.appendingPathComponent(name)
-            let disabled = tweakFolder.appendingPathComponent(name + ".disabled")
-            let existing = fm.fileExists(atPath: enabled.path) ? enabled : (fm.fileExists(atPath: disabled.path) ? disabled : nil)
-            if let existing, let have = try? Self.sha256(of: existing), have == file.sha256.lowercased() {
+            let target = copies(of: name, in: folder)
+            let existing = fm.fileExists(atPath: target.enabled.path) ? target.enabled : (fm.fileExists(atPath: target.disabled.path) ? target.disabled : nil)
+            if let existing, let have = try? EchoStore.sha256(of: existing), have == file.sha256.lowercased() {
                 continue
             }
             status = "Downloading \(name)"
             progress = Double(index) / Double(max(files.count, 1))
             let temp = try await download(try httpsURL(file.url), expecting: file.sha256)
-            for old in [enabled, disabled] where fm.fileExists(atPath: old.path) {
+            for old in [target.enabled, target.disabled] where fm.fileExists(atPath: old.path) {
                 try fm.removeItem(at: old)
             }
-            try fm.moveItem(at: temp, to: enabled)
+            try fm.moveItem(at: temp, to: target.enabled)
+            if inGame { changedGame = true }
         }
         progress = 1
         try applyRenderer()
-    }
-
-    /// Libraries tagged for the other renderer are renamed to ".disabled", which TweakLoader skips.
-    private func applyRenderer() throws {
-        let fm = FileManager.default
-        for file in managedClientFiles {
-            let name = try safeName(file.name)
-            let enabled = tweakFolder.appendingPathComponent(name)
-            let disabled = tweakFolder.appendingPathComponent(name + ".disabled")
-            let wanted = file.renderer == nil || file.renderer == renderer.rawValue
-            if wanted, fm.fileExists(atPath: disabled.path), !fm.fileExists(atPath: enabled.path) {
-                try fm.moveItem(at: disabled, to: enabled)
-            } else if !wanted, fm.fileExists(atPath: enabled.path) {
-                if fm.fileExists(atPath: disabled.path) {
-                    try fm.removeItem(at: disabled)
-                }
-                try fm.moveItem(at: enabled, to: disabled)
-            }
-        }
+        return changedGame
     }
 
     // MARK: game

@@ -77,12 +77,10 @@ struct EchoHomeView: View {
         .preferredColorScheme(.dark)
         .modifier(EchoHideTabBar())
         .task {
-            store.installEmbedded()
-            reloadMods()
-            if !store.manifestAddress.isEmpty {
-                await store.refresh()
-                reloadMods()
-            }
+            await prepareClient(checkServer: true)
+        }
+        .onChange(of: sharedModel.apps.count) { _ in
+            Task { await prepareClient(checkServer: false) }
         }
     }
 
@@ -352,7 +350,7 @@ struct EchoHomeView: View {
             EchoPillPicker(options: EchoRenderer.allCases.map { $0.title }, selection: Binding(
                 get: { EchoRenderer.allCases.firstIndex(of: store.renderer) ?? 0 },
                 set: { store.setRenderer(EchoRenderer.allCases[$0]); reloadMods() }))
-            Text("Stock uses the game's own iOS shaders. Echo loads the converted PC shaders once the server supplies them. Takes effect the next time the game starts.")
+            Text("Stock uses the game's own iOS shaders. Echo loads EchoGfx and the converted PC shaders, which need a game build that includes the shader paks. Takes effect the next time the game starts.")
                 .font(EchoTheme.label(12)).foregroundColor(EchoTheme.dim)
             EchoSectionTitle(text: "Server")
             EchoCard {
@@ -363,10 +361,7 @@ struct EchoHomeView: View {
                     .foregroundColor(.white)
             }
             Button("CHECK FOR UPDATES") {
-                Task {
-                    await store.refresh()
-                    reloadMods()
-                }
+                Task { await prepareClient(checkServer: true) }
             }
             .buttonStyle(EchoPrimaryButtonStyle())
             .disabled(store.busy || store.manifestAddress.isEmpty)
@@ -399,9 +394,31 @@ struct EchoHomeView: View {
 
     // MARK: actions
 
+    /// Puts the client libraries in place for the installed game and signs the game again when one was added.
+    private func prepareClient(checkServer: Bool) async {
+        if let path = game?.appInfo.bundlePath() {
+            store.gameBundle = URL(fileURLWithPath: path)
+        } else {
+            store.gameBundle = nil
+        }
+        var changedGame = store.installEmbedded()
+        if checkServer, !store.manifestAddress.isEmpty {
+            if await store.refresh() { changedGame = true }
+        }
+        reloadMods()
+        if changedGame, let game {
+            do {
+                try await game.forceResign()
+            } catch {
+                launchError = error.localizedDescription
+            }
+        }
+    }
+
     private func play() async {
         guard let game else { return }
         launchError = ""
+        await prepareClient(checkServer: false)
         do {
             try await game.runApp()
         } catch {
