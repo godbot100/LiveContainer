@@ -200,6 +200,7 @@
 				Localizable.xcstrings,
 				Settings.bundle,
 				universal.js,
+				EchoIOS.dylib.bin,
 			);
 			target = 17DCE99C2C7067EC00731D42 /* LiveContainer */;
 		};
