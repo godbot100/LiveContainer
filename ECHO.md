@@ -46,3 +46,11 @@ when that renderer is selected; nothing is installed while the game is running.
 - [ ] Paks, command line, locking the app list to the one game
 - [x] Renderer setting (switches the tagged client libraries)
 - [ ] Mods
+
+## Backend
+
+The manifest is served by the Echo backend at `GET /launcher/ios/manifest`; files at
+`GET /launcher/ios/file/<sha256>`. `game` is `null` until a `game.ipa` is published. Files are published
+through the dashboard API (`POST /dashboard/api/ios-launcher/files/<name>`, owner only) or
+`node packages/backend/scripts/publish-ios-launcher-file.js <file> [name]` on the server. Accepted names:
+`game.ipa`, `EchoIOS.dylib`, `EchoGfx.dylib` (Echo renderer only), `pakchunk<name>-iosclient_p.pak` / `.sig`.

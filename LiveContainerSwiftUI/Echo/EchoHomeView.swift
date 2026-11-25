@@ -12,11 +12,11 @@ struct EchoHomeView: View {
         NavigationView {
             Form {
                 Section(header: Text("Game")) {
-                    if let manifest = store.manifest {
+                    if let game = store.manifest?.game {
                         HStack {
                             Text("Build")
                             Spacer()
-                            Text(manifest.game.build).foregroundColor(.secondary)
+                            Text(game.build).foregroundColor(.secondary)
                         }
                         if store.gameNeedsInstall {
                             Button("Install Fortnite") {

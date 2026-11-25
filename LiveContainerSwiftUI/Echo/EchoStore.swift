@@ -24,8 +24,8 @@ final class EchoStore: ObservableObject {
     @Published var progress: Double = 0
 
     var gameNeedsInstall: Bool {
-        guard let manifest else { return false }
-        return UserDefaults.standard.string(forKey: EchoStore.installedGameKey)?.lowercased() != manifest.game.sha256.lowercased()
+        guard let game = manifest?.game else { return false }
+        return UserDefaults.standard.string(forKey: EchoStore.installedGameKey)?.lowercased() != game.sha256.lowercased()
     }
 
     func saveAddress() {
@@ -79,7 +79,7 @@ final class EchoStore: ObservableObject {
             }
             manifest = decoded
             try await syncClient(decoded)
-            status = gameNeedsInstall ? "Game install needed" : "Up to date"
+            status = decoded.game == nil ? "The server has no game published yet" : (gameNeedsInstall ? "Game install needed" : "Up to date")
         } catch {
             status = error.localizedDescription
         }
@@ -136,19 +136,19 @@ final class EchoStore: ObservableObject {
     // MARK: game
 
     func installGame() async {
-        guard !busy, let manifest else { return }
+        guard !busy, let game = manifest?.game else { return }
         busy = true
         defer { busy = false }
         do {
             status = "Downloading Fortnite"
             progress = 0
-            let temp = try await download(try httpsURL(manifest.game.url), expecting: manifest.game.sha256)
+            let temp = try await download(try httpsURL(game.url), expecting: game.sha256)
             let ipa = FileManager.default.temporaryDirectory.appendingPathComponent("EchoGame.ipa")
             if FileManager.default.fileExists(atPath: ipa.path) {
                 try FileManager.default.removeItem(at: ipa)
             }
             try FileManager.default.moveItem(at: temp, to: ipa)
-            UserDefaults.standard.set(manifest.game.sha256.lowercased(), forKey: EchoStore.installedGameKey)
+            UserDefaults.standard.set(game.sha256.lowercased(), forKey: EchoStore.installedGameKey)
             status = "Installing Fortnite"
             DataManager.shared.model.selectedTab = .apps
             // the app list only listens once its tab has been shown

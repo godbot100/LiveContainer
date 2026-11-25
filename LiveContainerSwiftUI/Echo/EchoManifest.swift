@@ -39,7 +39,7 @@ struct EchoManifest: Codable {
     }
 
     var version: Int
-    var game: Game
+    var game: Game?
     var client: [ClientFile]?
     var paks: [Pak]?
     var commandLine: CommandLine?
