@@ -73,9 +73,7 @@ final class EchoStore: ObservableObject {
 
     /// True when the installed build includes the converted PC shader pak EchoGfx needs.
     var gameHasPcShaders: Bool {
-        guard let bundle = gameBundle else { return false }
-        let pak = bundle.appendingPathComponent("cookeddata/fortnitegame/content/paks/pakchunkzmetalmrt-iosclient_p.pak")
-        return FileManager.default.fileExists(atPath: pak.path)
+        gameHasPaks(["pakchunkzmetalmrt-iosclient_p.pak"])
     }
 
     /// The renderer that will really be used: the PC-shader renderer only on a build that has its shaders.
@@ -83,44 +81,109 @@ final class EchoStore: ObservableObject {
         renderer == .echo && gameHasPcShaders ? .echo : .stock
     }
 
-    // MARK: PC meshes
+    // MARK: optional paks
 
-    /// The high-detail PC mesh pak some builds ship. Renaming it to ".disabled" makes the game skip it.
-    private static let pcMeshFiles = ["pakchunkpcmeshes-iosclient_p.pak", "pakchunkpcmeshes-iosclient_p.sig"]
+    /// Paks the launcher can switch off by renaming them (and their .sig) to ".disabled", which the game skips.
+    static let pcMeshPaks = ["pakchunkpcmeshes"]
+    /// The converted PC shaders, materials and textures. They only work with the Echo renderer.
+    static let pcRendererPaks = ["pakchunkzmetalmrt", "pakchunkpctex"]
 
-    private func pcMeshCopies(_ name: String) -> (enabled: URL, disabled: URL)? {
-        guard let folder = gameBundle?.appendingPathComponent("cookeddata/fortnitegame/content/paks") else { return nil }
-        return copies(of: name, in: folder)
+    private var paksFolder: URL? {
+        gameBundle?.appendingPathComponent("cookeddata/fortnitegame/content/paks")
     }
 
-    var gameHasPcMeshes: Bool {
-        guard let pak = pcMeshCopies(EchoStore.pcMeshFiles[0]) else { return false }
-        return FileManager.default.fileExists(atPath: pak.enabled.path) || FileManager.default.fileExists(atPath: pak.disabled.path)
+    /// File names in the paks folder that belong to one of the given pak name prefixes, enabled or not.
+    private func pakFiles(_ prefixes: [String]) -> [String] {
+        guard let folder = paksFolder else { return [] }
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
+        return names.filter { name in prefixes.contains { name.hasPrefix($0) } }.sorted()
     }
 
-    var pcMeshesEnabled: Bool {
-        guard let pak = pcMeshCopies(EchoStore.pcMeshFiles[0]) else { return false }
-        return FileManager.default.fileExists(atPath: pak.enabled.path)
+    func gameHasPaks(_ prefixes: [String]) -> Bool {
+        !pakFiles(prefixes).isEmpty
     }
+
+    func paksEnabled(_ prefixes: [String]) -> Bool {
+        pakFiles(prefixes).contains { $0.hasSuffix(".pak") }
+    }
+
+    private func renamePaks(_ prefixes: [String], enabled: Bool) throws {
+        guard let folder = paksFolder else { return }
+        let fm = FileManager.default
+        for name in pakFiles(prefixes) {
+            let isDisabled = name.hasSuffix(".disabled")
+            if enabled == !isDisabled { continue }
+            let target = enabled ? String(name.dropLast(".disabled".count)) : name + ".disabled"
+            let to = folder.appendingPathComponent(target)
+            if fm.fileExists(atPath: to.path) {
+                try fm.removeItem(at: to)
+            }
+            try fm.moveItem(at: folder.appendingPathComponent(name), to: to)
+        }
+    }
+
+    var gameHasPcMeshes: Bool { gameHasPaks(EchoStore.pcMeshPaks) }
+    var pcMeshesEnabled: Bool { paksEnabled(EchoStore.pcMeshPaks) }
 
     func setPcMeshes(_ enabled: Bool) {
-        let fm = FileManager.default
         do {
-            for name in EchoStore.pcMeshFiles {
-                guard let file = pcMeshCopies(name) else { continue }
-                let from = enabled ? file.disabled : file.enabled
-                let to = enabled ? file.enabled : file.disabled
-                guard fm.fileExists(atPath: from.path) else { continue }
-                if fm.fileExists(atPath: to.path) {
-                    try fm.removeItem(at: to)
-                }
-                try fm.moveItem(at: from, to: to)
-            }
+            try renamePaks(EchoStore.pcMeshPaks, enabled: enabled)
             status = enabled ? "PC meshes: on" : "PC meshes: off"
         } catch {
             status = error.localizedDescription
         }
         objectWillChange.send()
+    }
+
+    // MARK: diagnostics
+
+    /// What the launcher has set up for the game, as plain text, so a problem can be read off instead of guessed.
+    func diagnostics(hideLiveContainer: Bool, container: URL?) -> String {
+        let fm = FileManager.default
+        var lines: [String] = []
+        lines.append("launcher \(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?") renderer=\(renderer.rawValue) effective=\(effectiveRenderer.rawValue)")
+        lines.append("hideLiveContainer=\(hideLiveContainer)")
+        guard let bundle = gameBundle else { return lines.joined(separator: "\n") + "\nno game bundle" }
+        lines.append("bundle \(bundle.lastPathComponent)")
+        let commandLine = (try? String(contentsOf: bundle.appendingPathComponent("ue4commandline.txt"), encoding: .utf8)) ?? "(missing)"
+        lines.append("commandline: \(commandLine)")
+        let settings = (try? String(contentsOf: bundle.appendingPathComponent("echo-gfx.ini"), encoding: .utf8)) ?? "(missing)"
+        lines.append("echo-gfx.ini: \(settings.trimmingCharacters(in: .whitespacesAndNewlines))")
+        for folder in [bundle.appendingPathComponent("Frameworks"), tweakFolder] {
+            let names = ((try? fm.contentsOfDirectory(atPath: folder.path)) ?? []).sorted()
+            lines.append("\(folder.lastPathComponent): \(names.joined(separator: ", "))")
+        }
+        lines.append("paks: \(pakFiles(EchoStore.pcRendererPaks + EchoStore.pcMeshPaks).filter { !$0.contains(".sig") }.joined(separator: ", "))")
+        guard let container else { return lines.joined(separator: "\n") + "\nno data folder yet (the game has not run)" }
+        let documents = container.appendingPathComponent("Documents")
+        lines.append("data \(container.lastPathComponent): \(((try? fm.contentsOfDirectory(atPath: documents.path)) ?? []).sorted().joined(separator: ", "))")
+        lines.append("--- echo-gfx.log")
+        lines.append(EchoStore.tail(documents.appendingPathComponent("echo-gfx.log"), lines: 40, matching: nil))
+        if let enumerator = fm.enumerator(at: documents, includingPropertiesForKeys: nil) {
+            var seen = 0
+            for case let file as URL in enumerator {
+                seen += 1
+                if seen > 4000 { break }
+                if file.lastPathComponent == "FortniteGame.log" {
+                    lines.append("--- FortniteGame.log")
+                    lines.append(EchoStore.tail(file, lines: 40, matching: ["metalmrt", "ShaderArchive", "LogMetal", "Mounted Pak", "Error"]))
+                    break
+                }
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private static func tail(_ file: URL, lines count: Int, matching words: [String]?) -> String {
+        guard let handle = try? FileHandle(forReadingFrom: file) else { return "(no file)" }
+        defer { try? handle.close() }
+        let data = handle.readData(ofLength: 4_000_000)
+        var rows = String(decoding: data, as: UTF8.self).split(separator: "\n").map(String.init)
+        if let words {
+            rows = rows.filter { row in words.contains { row.localizedCaseInsensitiveContains($0) } }
+            return rows.prefix(count).map { String($0.prefix(220)) }.joined(separator: "\n")
+        }
+        return rows.prefix(count).map { String($0.prefix(220)) }.joined(separator: "\n")
     }
 
     private var clientFolder: URL {
@@ -235,6 +298,7 @@ final class EchoStore: ObservableObject {
                 try fm.moveItem(at: target.enabled, to: target.disabled)
             }
         }
+        try renamePaks(EchoStore.pcRendererPaks, enabled: effectiveRenderer == .echo)
         try applyCommandLine()
     }
 

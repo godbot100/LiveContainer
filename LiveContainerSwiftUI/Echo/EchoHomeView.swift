@@ -33,7 +33,7 @@ enum EchoPage: Int, CaseIterable, Identifiable {
 }
 
 enum EchoSettingsPage {
-    case root, account, mods, game, appearance, advanced
+    case root, account, mods, game, appearance, diagnostics, advanced
 }
 
 struct EchoHomeView: View {
@@ -49,6 +49,7 @@ struct EchoHomeView: View {
     @State private var mods: [EchoMod] = []
     @State private var launchError = ""
     @State private var showPassword = false
+    @State private var report = ""
 
     private var game: LCAppModel? {
         sharedModel.apps.first { app in
@@ -332,6 +333,7 @@ struct EchoHomeView: View {
                 settingsTile("Mods", "Optional add-ons, applied the next time you launch", .star, .mods)
                 settingsTile("Game", "How Echo starts up and behaves in game", .game, .game)
                 settingsTile("Appearance", "The launcher's colour theme", .palette, .appearance)
+                settingsTile("Diagnostics", "What the launcher set up, and the game's own logs", .stats, .diagnostics)
                 settingsTile("Advanced", "Certificates, app list and the LiveContainer settings", .build, .advanced)
             }
         case .account:
@@ -382,7 +384,7 @@ struct EchoHomeView: View {
             EchoPillPicker(options: EchoRenderer.allCases.map { $0.title }, selection: Binding(
                 get: { EchoRenderer.allCases.firstIndex(of: store.renderer) ?? 0 },
                 set: { store.setRenderer(EchoRenderer.allCases[$0]); reloadMods() }))
-            Text("Stock uses the game's own iOS shaders. Echo loads EchoGfx and the converted PC shaders, which need a game build that includes the shader paks. Takes effect the next time the game starts.")
+            Text("Stock uses the game's own iOS shaders and switches off EchoGfx and the PC shader, material and texture paks. Echo switches them back on. Takes effect the next time the game starts.")
                 .font(EchoTheme.label(12)).foregroundColor(EchoTheme.dim)
             if store.gameHasPcMeshes {
                 EchoSectionTitle(text: "Meshes")
@@ -434,6 +436,22 @@ struct EchoHomeView: View {
                     .buttonStyle(.plain)
                 }
             }
+        case .diagnostics:
+            backHeader("Diagnostics", "What the launcher set up, and the game's own logs")
+            HStack(spacing: 10) {
+                Button("Refresh") { loadReport() }
+                    .buttonStyle(EchoButtonStyle(kind: .ghost))
+                Button("Copy") { UIPasteboard.general.string = report }
+                    .buttonStyle(EchoButtonStyle())
+            }
+            Text(report.isEmpty ? "Nothing yet." : report)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundColor(.white)
+                .textSelection(.enabled)
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .echoSurface()
+                .onAppear { loadReport() }
         case .advanced:
             backHeader("Advanced", "Certificates, app list and the LiveContainer settings")
             advancedButton("App list", "Install, sign and manage builds", .apps)
@@ -487,6 +505,17 @@ struct EchoHomeView: View {
         } catch {
             launchError = error.localizedDescription
         }
+    }
+
+    private func loadReport() {
+        var container: URL?
+        if let folder = game?.uiDefaultDataFolder, !folder.isEmpty {
+            for root in [LCPath.dataPath, LCPath.lcGroupDataPath] {
+                let candidate = root.appendingPathComponent(folder)
+                if FileManager.default.fileExists(atPath: candidate.path) { container = candidate }
+            }
+        }
+        report = store.diagnostics(hideLiveContainer: game?.uiHideLiveContainer ?? false, container: container)
     }
 
     private func reloadMods() {
