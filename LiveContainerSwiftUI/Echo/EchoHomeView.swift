@@ -41,6 +41,7 @@ enum EchoSettingsPage {
 
 struct EchoHomeView: View {
     @StateObject private var store = EchoStore()
+    @StateObject private var account = EchoAccount()
     @EnvironmentObject private var sharedModel: SharedModel
     @State private var page: EchoPage = .home
     @State private var settingsPage: EchoSettingsPage = .root
@@ -78,6 +79,9 @@ struct EchoHomeView: View {
         .modifier(EchoHideTabBar())
         .task {
             await prepareClient(checkServer: true)
+        }
+        .task {
+            await account.refreshAll()
         }
         .onChange(of: sharedModel.apps.count) { _ in
             Task { await prepareClient(checkServer: false) }
@@ -136,10 +140,10 @@ struct EchoHomeView: View {
     private var pageContent: some View {
         switch page {
         case .home: homePage
-        case .servers: scrollPage { serversPage }
-        case .store: scrollPage { storePage }
+        case .servers: scrollPage { EchoServersPage(account: account) }
+        case .store: scrollPage { EchoStorePage(account: account) }
         case .builds: scrollPage { buildsPage }
-        case .profile: scrollPage { profilePage }
+        case .profile: scrollPage { EchoProfilePage(account: account) }
         case .settings: scrollPage { settingsContent }
         }
     }
@@ -162,7 +166,20 @@ struct EchoHomeView: View {
             Text(game == nil ? "FORTNITE 3.6 · NOT INSTALLED" : "FORTNITE 3.6 · READY")
                 .font(EchoTheme.heading(16))
                 .foregroundColor(.white)
-            if game != nil {
+            if !account.signedIn {
+                Button(account.busy ? "SIGNING IN…" : "SIGN IN WITH DISCORD") {
+                    Task { await account.signIn() }
+                }
+                .buttonStyle(EchoPrimaryButtonStyle())
+                .disabled(account.busy)
+                if game != nil {
+                    Button("Play without signing in") {
+                        Task { await play() }
+                    }
+                    .font(EchoTheme.label(13))
+                    .foregroundColor(EchoTheme.dim)
+                }
+            } else if game != nil {
                 Button("PLAY") {
                     Task { await play() }
                 }
@@ -183,26 +200,13 @@ struct EchoHomeView: View {
                     .font(EchoTheme.label(13))
                     .foregroundColor(EchoTheme.dim)
             }
+            EchoAccountNotices(account: account)
             Spacer()
             EchoSectionTitle(text: "News")
-            EchoEmptyState(symbol: "newspaper.fill", text: "News appears here once this launcher is connected to the Echo server.")
+            EchoNewsStrip(account: account)
         }
         .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-    }
-
-    private var serversPage: some View {
-        Group {
-            EchoPageHeader(title: "Servers", subtitle: "Every match running on Echo right now, live.")
-            EchoEmptyState(symbol: "server.rack", text: "The live server list needs the Echo server connection, which is not set up in this launcher yet.")
-        }
-    }
-
-    private var storePage: some View {
-        Group {
-            EchoPageHeader(title: "Store", subtitle: "Every purchase supports Echo!")
-            EchoEmptyState(symbol: "bag.fill", text: "The store needs sign-in and the Echo server connection, which are not set up in this launcher yet.")
-        }
     }
 
     private var buildsPage: some View {
@@ -249,7 +253,7 @@ struct EchoHomeView: View {
                     Label {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Download build").font(EchoTheme.label(15)).foregroundColor(.white)
-                            Text(store.manifest?.game == nil ? "Needs the Echo server connection (Settings, Game)." : "Fortnite 3.6 from the Echo server.")
+                            Text(store.manifest?.game == nil ? "No build is published on the Echo server yet." : "Fortnite 3.6 from the Echo server.")
                                 .font(EchoTheme.label(12)).foregroundColor(EchoTheme.dim)
                         }
                     } icon: {
@@ -262,13 +266,6 @@ struct EchoHomeView: View {
             if store.busy {
                 ProgressView()
             }
-        }
-    }
-
-    private var profilePage: some View {
-        Group {
-            EchoPageHeader(title: "Profile", subtitle: "Stats and locker.")
-            EchoEmptyState(symbol: "person.crop.circle.fill", text: "Your profile needs sign-in, which is not set up in this launcher yet.")
         }
     }
 
@@ -342,7 +339,7 @@ struct EchoHomeView: View {
                     }
                 }
             } else {
-                EchoEmptyState(symbol: "square.grid.2x2.fill", text: "The mod marketplace needs the Echo server connection, which is not set up in this launcher yet.")
+                EchoEmptyState(symbol: "square.grid.2x2.fill", text: "Nothing for iOS is published in the Echo mod catalog yet.")
             }
         case .game:
             backHeader("Game", "How Echo starts up and behaves in game")
@@ -364,7 +361,7 @@ struct EchoHomeView: View {
                 Task { await prepareClient(checkServer: true) }
             }
             .buttonStyle(EchoPrimaryButtonStyle())
-            .disabled(store.busy || store.manifestAddress.isEmpty)
+            .disabled(store.busy)
             if !store.status.isEmpty {
                 Text(store.status).font(EchoTheme.label(13)).foregroundColor(EchoTheme.dim)
             }
@@ -402,7 +399,7 @@ struct EchoHomeView: View {
             store.gameBundle = nil
         }
         var changedGame = store.installEmbedded()
-        if checkServer, !store.manifestAddress.isEmpty {
+        if checkServer {
             if await store.refresh() { changedGame = true }
         }
         reloadMods()

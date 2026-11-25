@@ -55,3 +55,19 @@ The manifest is served by the Echo backend at `GET /launcher/ios/manifest`; file
 through the dashboard API (`POST /dashboard/api/ios-launcher/files/<name>`, owner only) or
 `node packages/backend/scripts/publish-ios-launcher-file.js <file> [name]` on the server. Accepted names:
 `game.ipa`, `EchoIOS.dylib`, `EchoGfx.dylib` (Echo renderer only), `pakchunk<name>-iosclient_p.pak` / `.sig`.
+
+## Sign-in and server calls
+
+Same as the PC launcher (`EchoAccount.swift`):
+
+- Sign-in opens `<backend>/launcher/oauth/login?challenge=<base64url(sha256(verifier))>` in an
+  `ASWebAuthenticationSession` that catches the `echo://callback?code=&state=` return, then posts
+  `{code, state, verifier}` to `/launcher/oauth/exchange`. The returned token is kept in the keychain.
+- Every later call sends `Authorization: bearer eg1~<token>` and the User-Agent
+  `EchoLauncher/<version> (iOS; +https://echofn.org)`.
+- Used routes: `/launcher/news`, `/launcher/servers`, `/launcher/shop`, `/launcher/vbucks`,
+  `/launcher/account/credentials`, `/launcher/ios/manifest`.
+- The backend is the origin of the manifest address (Settings, Game); default `https://api.echofn.org`.
+- Not used on purpose: `/launcher/session`, `/launcher/game-nonce` and `/launcher/events`. Those drive the
+  PC launch grant and official-launcher checks, which mobile logins are exempt from; the game signs in with
+  the email and password shown on the Profile page.

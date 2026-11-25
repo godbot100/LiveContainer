@@ -37,7 +37,12 @@ final class EchoStore: ObservableObject {
         EmbeddedFile(name: "EchoGfx.dylib", renderer: "echo"),
     ]
 
-    @Published var manifestAddress: String = UserDefaults.standard.string(forKey: EchoStore.manifestKey) ?? ""
+    static func savedManifestAddress() -> String {
+        let saved = UserDefaults.standard.string(forKey: EchoStore.manifestKey) ?? ""
+        return saved.isEmpty ? EchoAPI.defaultBackend + EchoAPI.manifestPath : saved
+    }
+
+    @Published var manifestAddress: String = EchoStore.savedManifestAddress()
     @Published var renderer: EchoRenderer = EchoRenderer(rawValue: UserDefaults.standard.string(forKey: EchoStore.rendererKey) ?? "") ?? .echo
     @Published var manifest: EchoManifest?
     @Published var status: String = ""
@@ -235,11 +240,11 @@ final class EchoStore: ObservableObject {
             saveAddress()
             let url = try httpsURL(manifestAddress)
             status = "Checking for updates"
-            var request = URLRequest(url: url)
+            var request = EchoAPI.request(url)
             request.cachePolicy = .reloadIgnoringLocalCacheData
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-                throw EchoError.message("The manifest request failed")
+                throw EchoError.message("The manifest request failed (HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0))")
             }
             let decoded = try JSONDecoder().decode(EchoManifest.self, from: data)
             guard decoded.version == 1 else {
@@ -312,7 +317,7 @@ final class EchoStore: ObservableObject {
     // MARK: download + integrity
 
     private func download(_ url: URL, expecting sha256: String) async throws -> URL {
-        let (location, response) = try await URLSession.shared.download(from: url)
+        let (location, response) = try await URLSession.shared.download(for: EchoAPI.request(url))
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             throw EchoError.message("Download failed: \(url.lastPathComponent)")
         }
