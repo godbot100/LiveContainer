@@ -32,6 +32,12 @@ enum EchoPage: Int, CaseIterable, Identifiable {
     }
 }
 
+/// A graphics change that needs the performance warning before it is applied.
+enum EchoGraphicsChange: Identifiable {
+    case pcRenderer, pcMeshes
+    var id: Int { self == .pcRenderer ? 0 : 1 }
+}
+
 enum EchoSettingsPage {
     case root, account, mods, game, appearance, diagnostics, advanced
 }
@@ -50,6 +56,7 @@ struct EchoHomeView: View {
     @State private var launchError = ""
     @State private var showPassword = false
     @State private var report = ""
+    @State private var graphicsWarning: EchoGraphicsChange?
 
     private var game: LCAppModel? {
         sharedModel.apps.first { app in
@@ -86,6 +93,20 @@ struct EchoHomeView: View {
             }
         }
         .id(themeName)
+        .alert(item: $graphicsWarning) { change in
+            Alert(
+                title: Text("Performance warning"),
+                message: Text("PC-level \(change == .pcRenderer ? "shaders" : "meshes") are much heavier than the stock ones. Expect a lower frame rate, faster battery drain and a device that can get hot. Take a break if it becomes uncomfortable to hold."),
+                primaryButton: .default(Text("Turn on")) {
+                    if change == .pcRenderer {
+                        store.setRenderer(.echo)
+                        reloadMods()
+                    } else {
+                        store.setPcMeshes(true)
+                    }
+                },
+                secondaryButton: .cancel())
+        }
         .preferredColorScheme(.dark)
         .modifier(EchoHideTabBar())
         .task {
@@ -211,6 +232,12 @@ struct EchoHomeView: View {
                 }
                 .buttonStyle(EchoPrimaryButtonStyle())
             }
+            if game != nil {
+                VStack(alignment: .leading, spacing: 8) {
+                    graphicsControls
+                }
+                .frame(maxWidth: 360, alignment: .leading)
+            }
             if !launchError.isEmpty {
                 Text(launchError).font(EchoTheme.label(13)).foregroundColor(EchoTheme.red)
             }
@@ -220,6 +247,40 @@ struct EchoHomeView: View {
             EchoAccountNotices(account: account)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Renderer and mesh switches, shared by Home and Settings. Turning a PC option on asks first.
+    @ViewBuilder
+    private var graphicsControls: some View {
+        if store.gameHasPcShaders {
+            EchoPillPicker(options: EchoRenderer.allCases.map { $0.title }, selection: Binding(
+                get: { EchoRenderer.allCases.firstIndex(of: store.renderer) ?? 0 },
+                set: { index in
+                    if EchoRenderer.allCases[index] == .echo {
+                        if store.renderer != .echo { graphicsWarning = .pcRenderer }
+                    } else {
+                        store.setRenderer(.stock)
+                        reloadMods()
+                    }
+                }))
+        }
+        if store.gameHasPcMeshes {
+            Toggle(isOn: Binding(get: { store.pcMeshesEnabled }, set: { on in
+                if on { graphicsWarning = .pcMeshes } else { store.setPcMeshes(false) }
+            })) {
+                Text("HIGH-QUALITY PC MESHES").font(EchoTheme.caps(14)).foregroundColor(.white)
+            }
+            .tint(EchoTheme.accent)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .echoSurface()
+        }
+        if store.effectiveRenderer == .echo || store.pcMeshesEnabled {
+            Text("PC-level graphics are on: lower frame rate, more battery use, and the device can get hot.")
+                .font(EchoTheme.label(12, weight: 600))
+                .foregroundColor(EchoTheme.yellow)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     private func actionRow(_ icon: EchoIcon, _ title: String, _ subtitle: String) -> some View {
@@ -380,25 +441,10 @@ struct EchoHomeView: View {
             }
         case .game:
             backHeader("Game", "How Echo starts up and behaves in game")
-            EchoSectionTitle(text: "Renderer")
-            EchoPillPicker(options: EchoRenderer.allCases.map { $0.title }, selection: Binding(
-                get: { EchoRenderer.allCases.firstIndex(of: store.renderer) ?? 0 },
-                set: { store.setRenderer(EchoRenderer.allCases[$0]); reloadMods() }))
-            Text("Stock uses the game's own iOS shaders and switches off EchoGfx and the PC shader, material and texture paks. Echo switches them back on. Takes effect the next time the game starts.")
+            EchoSectionTitle(text: "Graphics")
+            graphicsControls
+            Text("Stock uses the game's own iOS shaders and switches off EchoGfx and the PC shader, material and texture paks. Echo switches them back on. Changes take effect the next time the game starts.")
                 .font(EchoTheme.label(12)).foregroundColor(EchoTheme.dim)
-            if store.gameHasPcMeshes {
-                EchoSectionTitle(text: "Meshes")
-                Toggle(isOn: Binding(get: { store.pcMeshesEnabled }, set: { store.setPcMeshes($0) })) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("HIGH-QUALITY PC MESHES").font(EchoTheme.title(16)).foregroundColor(.white)
-                        Text("Off uses the game's own iOS meshes, which are lighter. Takes effect the next time the game starts.")
-                            .font(EchoTheme.label(12)).foregroundColor(EchoTheme.dim)
-                    }
-                }
-                .tint(EchoTheme.accent)
-                .padding(14)
-                .echoSurface()
-            }
             EchoSectionTitle(text: "Server")
             TextField("https://", text: $store.manifestAddress)
                 .keyboardType(.URL)
