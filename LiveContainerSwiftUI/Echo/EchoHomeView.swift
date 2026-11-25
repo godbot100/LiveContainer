@@ -398,6 +398,11 @@ struct EchoHomeView: View {
         } else {
             store.gameBundle = nil
         }
+        // EchoGfx and EchoIOS find the game by asking for image 0. Without this LiveContainer setting image 0 is
+        // the launcher itself, the hooks attach to nothing and the PC-shader renderer draws wrongly.
+        if let game, !game.uiHideLiveContainer {
+            game.uiHideLiveContainer = true
+        }
         var changedGame = store.installEmbedded()
         if checkServer {
             if await store.refresh() { changedGame = true }
