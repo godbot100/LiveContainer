@@ -50,7 +50,8 @@ final class EchoStore: ObservableObject {
     @Published var progress: Double = 0
 
     /// The installed game's bundle folder, set by the view. nil while no game is installed.
-    var gameBundle: URL?
+    /// Published so the graphics switches appear as soon as the installed game is known.
+    @Published var gameBundle: URL?
 
     var gameNeedsInstall: Bool {
         guard let game = manifest?.game else { return false }

@@ -517,10 +517,9 @@ struct EchoHomeView: View {
 
     /// Puts the client libraries in place for the installed game and signs the game again when one was added.
     private func prepareClient(checkServer: Bool) async {
-        if let path = game?.appInfo.bundlePath() {
-            store.gameBundle = URL(fileURLWithPath: path)
-        } else {
-            store.gameBundle = nil
+        let bundle = game?.appInfo.bundlePath().map { URL(fileURLWithPath: $0) }
+        if store.gameBundle != bundle {
+            store.gameBundle = bundle
         }
         // EchoGfx and EchoIOS find the game by asking for image 0. Without this LiveContainer setting image 0 is
         // the launcher itself, the hooks attach to nothing and the PC-shader renderer draws wrongly.
@@ -546,11 +545,21 @@ struct EchoHomeView: View {
         launchError = ""
         music.stop()
         await prepareClient(checkServer: false)
+        // A JIT launch is carried out by the app list screen, which only exists once it has been shown.
+        // Without it LiveContainer's launch call returns without doing anything.
+        if game.appInfo.isJITNeeded, game.delegate == nil {
+            sharedModel.selectedTab = .apps
+            try? await Task.sleep(nanoseconds: 800_000_000)
+        }
         do {
             try await game.runApp()
         } catch {
             launchError = error.localizedDescription
+            return
         }
+        // a successful launch replaces this screen; still being here means nothing started
+        try? await Task.sleep(nanoseconds: 2_500_000_000)
+        launchError = "The game did not start. Open Settings, Advanced, App list and start it there once, then try again."
     }
 
     private func loadReport() {
