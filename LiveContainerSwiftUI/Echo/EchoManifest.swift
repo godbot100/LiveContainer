@@ -17,6 +17,7 @@ struct EchoManifest: Codable {
     struct RemoteFile: Codable {
         var url: String
         var sha256: String
+        var size: Int64?
     }
     struct ClientFile: Codable {
         var name: String

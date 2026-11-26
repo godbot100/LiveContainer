@@ -71,3 +71,15 @@ Same as the PC launcher (`EchoAccount.swift`):
 - Not used on purpose: `/launcher/session`, `/launcher/game-nonce` and `/launcher/events`. Those drive the
   PC launch grant and official-launcher checks, which mobile logins are exempt from; the game signs in with
   the email and password shown on the Profile page.
+
+## Content updates without a new launcher or IPA
+
+Everything published on the dashboard (Paks, iOS) reaches players at the next launcher start or PLAY:
+
+- **Libraries** (`EchoIOS.dylib`, `EchoGfx.dylib`): replaced inside the game when the hash differs, then the game is signed again.
+- **Paks** (`pakchunk<name>-iosclient_p.pak` and `.sig`): downloaded into the game's paks folder, hash-checked. A pak the
+  launcher installed and the server no longer lists is removed; paks that came with the game are never deleted.
+  A pak marked as an Echo-renderer pak is kept as `.disabled` while the Stock renderer is selected.
+- **Launch arguments**: the manifest's `all`, `echo` and `stock` lists are written into `ue4commandline.txt`; arguments
+  the server stops listing are taken out again.
+- The last manifest is cached, so an offline launch keeps the same content. A failed check never blocks PLAY.

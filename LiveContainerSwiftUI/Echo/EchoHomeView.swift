@@ -544,7 +544,8 @@ struct EchoHomeView: View {
         guard let game else { return }
         launchError = ""
         music.stop()
-        await prepareClient(checkServer: false)
+        // every launch asks the server for new libraries and paks first; a failed check never blocks the game
+        await prepareClient(checkServer: true)
         // A JIT launch is carried out by the app list screen, which only exists once it has been shown.
         // Without it LiveContainer's launch call returns without doing anything.
         if game.appInfo.isJITNeeded, game.delegate == nil {

@@ -23,6 +23,10 @@ final class EchoStore: ObservableObject {
     static let rendererKey = "EchoRenderer"
     static let installedGameKey = "EchoInstalledGameSHA256"
     static let embeddedKeyPrefix = "EchoEmbeddedSHA256:"
+    static let manifestCacheKey = "EchoManifestCache"
+    static let serverPaksKey = "EchoServerPaks"
+    static let managedArgumentsKey = "EchoManagedArguments"
+    static let pcMeshesOffKey = "EchoPcMeshesOff"
     static let rendererArgument = "-metalmrt"
     static let embeddedGfxSettings = "3 2 1\n"
 
@@ -44,7 +48,8 @@ final class EchoStore: ObservableObject {
 
     @Published var manifestAddress: String = EchoStore.savedManifestAddress()
     @Published var renderer: EchoRenderer = EchoRenderer(rawValue: UserDefaults.standard.string(forKey: EchoStore.rendererKey) ?? "") ?? .echo
-    @Published var manifest: EchoManifest?
+    /// The last manifest the server gave, kept on disk so an offline launch applies the same content.
+    @Published var manifest: EchoManifest? = UserDefaults.standard.data(forKey: EchoStore.manifestCacheKey).flatMap { try? JSONDecoder().decode(EchoManifest.self, from: $0) }
     @Published var status: String = ""
     @Published var busy = false
     @Published var progress: Double = 0
@@ -127,6 +132,7 @@ final class EchoStore: ObservableObject {
     var pcMeshesEnabled: Bool { paksEnabled(EchoStore.pcMeshPaks) }
 
     func setPcMeshes(_ enabled: Bool) {
+        UserDefaults.standard.set(!enabled, forKey: EchoStore.pcMeshesOffKey)
         do {
             try renamePaks(EchoStore.pcMeshPaks, enabled: enabled)
             status = enabled ? "PC meshes: on" : "PC meshes: off"
@@ -300,23 +306,60 @@ final class EchoStore: ObservableObject {
             }
         }
         try renamePaks(EchoStore.pcRendererPaks, enabled: effectiveRenderer == .echo)
+        if let paks = paksFolder {
+            for pak in manifest?.paks ?? [] {
+                for name in [pak.name + ".pak", pak.name + ".sig"] {
+                    try setFile(try safeName(name), in: paks, enabled: pakWanted(name, renderer: pak.renderer))
+                }
+            }
+        }
         try applyCommandLine()
     }
 
+    /// Whether a pak should be loaded right now: its renderer tag, the PC-renderer paks and the mesh switch decide.
+    private func pakWanted(_ name: String, renderer tag: String?) -> Bool {
+        if let tag, tag != effectiveRenderer.rawValue { return false }
+        if effectiveRenderer != .echo, EchoStore.pcRendererPaks.contains(where: { name.hasPrefix($0) }) { return false }
+        if UserDefaults.standard.bool(forKey: EchoStore.pcMeshesOffKey), EchoStore.pcMeshPaks.contains(where: { name.hasPrefix($0) }) { return false }
+        return true
+    }
+
+    /// Moves a file between its plain name and its ".disabled" name. Does nothing when it is already right.
+    private func setFile(_ name: String, in folder: URL, enabled: Bool) throws {
+        let fm = FileManager.default
+        let target = copies(of: name, in: folder)
+        let from = enabled ? target.disabled : target.enabled
+        let to = enabled ? target.enabled : target.disabled
+        guard fm.fileExists(atPath: from.path) else { return }
+        if fm.fileExists(atPath: to.path) {
+            try fm.removeItem(at: from)
+            return
+        }
+        try fm.moveItem(at: from, to: to)
+    }
+
+    /// Rewrites the game's command line: everything the launcher manages (the renderer switch and the
+    /// arguments the server lists) is taken out and the ones wanted now are put back. Anything else stays.
     private func applyCommandLine() throws {
         guard let file = gameBundle?.appendingPathComponent("ue4commandline.txt"),
               FileManager.default.fileExists(atPath: file.path) else { return }
-        let current = try String(contentsOf: file, encoding: .utf8)
-        var words = current.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\r" }).map(String.init)
-        let has = words.contains(EchoStore.rendererArgument)
-        if effectiveRenderer == .echo, !has {
-            words.append(EchoStore.rendererArgument)
-        } else if effectiveRenderer == .stock, has {
-            words.removeAll { $0 == EchoStore.rendererArgument }
-        } else {
-            return
+        let lists = manifest?.commandLine
+        let fromServer = (lists?.all ?? []) + (lists?.echo ?? []) + (lists?.stock ?? [])
+        let before = UserDefaults.standard.stringArray(forKey: EchoStore.managedArgumentsKey) ?? []
+        let managed = Set(fromServer + before + [EchoStore.rendererArgument])
+        var wanted = (lists?.all ?? []) + ((effectiveRenderer == .echo ? lists?.echo : lists?.stock) ?? [])
+        if effectiveRenderer == .echo {
+            wanted.append(EchoStore.rendererArgument)
         }
-        try words.joined(separator: " ").write(to: file, atomically: true, encoding: .utf8)
+        let current = try String(contentsOf: file, encoding: .utf8)
+        let words = current.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\r" }).map(String.init)
+        var updated = words.filter { !managed.contains($0) }
+        for argument in wanted where !updated.contains(argument) {
+            updated.append(argument)
+        }
+        UserDefaults.standard.set(fromServer, forKey: EchoStore.managedArgumentsKey)
+        if updated == words { return }
+        try updated.joined(separator: " ").write(to: file, atomically: true, encoding: .utf8)
     }
 
     // MARK: manifest
@@ -356,7 +399,9 @@ final class EchoStore: ObservableObject {
                 throw EchoError.message("This launcher is too old for the manifest (version \(decoded.version))")
             }
             manifest = decoded
+            UserDefaults.standard.set(data, forKey: EchoStore.manifestCacheKey)
             let changedGame = try await syncClient(decoded)
+            try await syncPaks(decoded)
             status = decoded.game == nil ? "The server has no game published yet" : (gameNeedsInstall ? "Game install needed" : "Up to date")
             return changedGame
         } catch {
@@ -391,6 +436,58 @@ final class EchoStore: ObservableObject {
         progress = 1
         try applyRenderer()
         return changedGame
+    }
+
+    /// Brings the game's paks in line with the server: new and changed ones are downloaded, ones the
+    /// launcher put there earlier and the server no longer lists are removed. Paks that came with the
+    /// game are never touched. A pak tagged for the other renderer is kept as ".disabled".
+    private func syncPaks(_ manifest: EchoManifest) async throws {
+        guard let folder = paksFolder, FileManager.default.fileExists(atPath: folder.path) else { return }
+        let fm = FileManager.default
+        var installed = UserDefaults.standard.dictionary(forKey: EchoStore.serverPaksKey) as? [String: String] ?? [:]
+        var listed = Set<String>()
+        let paks = manifest.paks ?? []
+        for (index, pak) in paks.enumerated() {
+            let base = try safeName(pak.name)
+            var parts: [(name: String, file: EchoManifest.RemoteFile)] = [(base + ".pak", pak.pak)]
+            if let sig = pak.sig {
+                parts.append((base + ".sig", sig))
+            }
+            for part in parts {
+                let wanted = pakWanted(part.name, renderer: pak.renderer)
+                listed.insert(part.name)
+                let target = copies(of: part.name, in: folder)
+                let existing = fm.fileExists(atPath: target.enabled.path) ? target.enabled : (fm.fileExists(atPath: target.disabled.path) ? target.disabled : nil)
+                var current = false
+                if let existing, installed[part.name] == part.file.sha256.lowercased() {
+                    let size = (try? fm.attributesOfItem(atPath: existing.path)[.size] as? NSNumber)?.int64Value
+                    current = part.file.size == nil || size == part.file.size
+                }
+                if !current {
+                    status = "Downloading \(part.name)"
+                    progress = Double(index) / Double(max(paks.count, 1))
+                    let temp = try await download(try httpsURL(part.file.url), expecting: part.file.sha256)
+                    for old in [target.enabled, target.disabled] where fm.fileExists(atPath: old.path) {
+                        try fm.removeItem(at: old)
+                    }
+                    try fm.moveItem(at: temp, to: wanted ? target.enabled : target.disabled)
+                    installed[part.name] = part.file.sha256.lowercased()
+                    UserDefaults.standard.set(installed, forKey: EchoStore.serverPaksKey)
+                } else {
+                    try setFile(part.name, in: folder, enabled: wanted)
+                }
+            }
+        }
+        for name in installed.keys where !listed.contains(name) {
+            let target = copies(of: name, in: folder)
+            for old in [target.enabled, target.disabled] where fm.fileExists(atPath: old.path) {
+                try fm.removeItem(at: old)
+            }
+            installed[name] = nil
+        }
+        UserDefaults.standard.set(installed, forKey: EchoStore.serverPaksKey)
+        progress = 1
+        try applyRenderer()
     }
 
     // MARK: game
