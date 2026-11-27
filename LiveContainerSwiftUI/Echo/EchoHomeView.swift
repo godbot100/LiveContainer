@@ -458,7 +458,7 @@ struct EchoHomeView: View {
             .padding(.vertical, 8)
             .echoSurface()
             .onAppear { lockerStyles = store.clientSetting("LockerStyles", in: gameContainer, fallback: true) }
-            Text("Adds EDIT STYLE to outfits that have styles. With a controller: R2 opens it, the d-pad changes the style, A saves. Switch it off if the game stops starting or the locker misbehaves.")
+            Text("Adds EDIT STYLE to outfits that have styles, the same way as on PC. With a controller: R2 opens it, the d-pad moves between styles, A saves. Switch it off if the game stops starting or the locker misbehaves.")
                 .font(EchoTheme.label(12)).foregroundColor(EchoTheme.dim)
             EchoSectionTitle(text: "Server")
             TextField("https://", text: $store.manifestAddress)
