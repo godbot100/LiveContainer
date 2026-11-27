@@ -9,8 +9,9 @@
 //  Where the libraries live depends on the game build:
 //  - A build whose executable already loads Frameworks/EchoIOS.dylib (every Echo test IPA): the libraries
 //    inside the installed game's Frameworks folder are the ones that load, so they are managed there.
-//    Each new launcher build replaces them once with the copies it ships, so a library update reaches the
+//    Each new launcher build replaces EchoIOS once with the copy it ships, so a library update reaches the
 //    game without a new game IPA; a server manifest that lists the library still has the last word.
+//    EchoGfx is tied to the build's shader paks: the build's own copy stays (see EmbeddedFile.replacesInGame).
 //    EchoGfx is loaded weakly by EchoIOS, so renaming it to ".disabled" is what switches to the stock renderer.
 //  - A plain build: the libraries go in LiveContainer's global tweak folder, where ".disabled" is skipped too.
 //
@@ -35,13 +36,18 @@ final class EchoStore: ObservableObject {
 
     /// Client libraries shipped inside the launcher, used until a manifest supplies newer ones.
     /// Stored in the app bundle as "<name>.bin" so the build does not treat them as code to link.
+    /// `replacesInGame` lists the only in-game copies (by SHA-256) this file may replace; nil replaces any.
+    /// EchoGfx belongs to the game build's shader paks, so the build's own copy is kept. The one copy the
+    /// launcher does replace is EchoGfx 12, which earlier launcher builds wrongly put over newer ones.
     struct EmbeddedFile {
         var name: String
         var renderer: String?
+        var replacesInGame: Set<String>? = nil
     }
     static let embeddedFiles = [
         EmbeddedFile(name: "EchoIOS.dylib", renderer: nil),
-        EmbeddedFile(name: "EchoGfx.dylib", renderer: "echo"),
+        EmbeddedFile(name: "EchoGfx.dylib", renderer: "echo",
+                     replacesInGame: ["6f9ec3177afbd942f6493f583ee25f17592bebf7d378713aa41a1fc5c6866be5"]),
     ]
 
     /// Small content paks shipped inside the launcher and copied into the game's paks folder (stored as
@@ -251,10 +257,15 @@ final class EchoStore: ObservableObject {
                     let inGameKey = EchoStore.embeddedInGameKeyPrefix + file.name
                     if present, UserDefaults.standard.string(forKey: inGameKey) == embeddedHash { continue }
                     let current = fm.fileExists(atPath: target.enabled.path) ? target.enabled : target.disabled
-                    if present, (try? EchoStore.sha256(of: current)) == embeddedHash {
+                    let currentHash = present ? (try? EchoStore.sha256(of: current)) : nil
+                    if present, currentHash == embeddedHash {
                         UserDefaults.standard.set(embeddedHash, forKey: inGameKey)
                         continue
                     }
+                    // signing changes a library's bytes, so the hash this launcher recorded when it placed one counts too
+                    let placedHash = UserDefaults.standard.string(forKey: inGameKey) ?? ""
+                    if present, let replaceable = file.replacesInGame,
+                       !replaceable.contains(currentHash ?? ""), !replaceable.contains(placedHash) { continue }
                     for old in [target.enabled, target.disabled] where fm.fileExists(atPath: old.path) {
                         try fm.removeItem(at: old)
                     }

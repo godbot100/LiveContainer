@@ -87,9 +87,15 @@ Everything published on the dashboard (Paks, iOS) reaches players at the next la
 ## Client library updates
 
 The launcher ships its own `EchoIOS.dylib` and `EchoGfx.dylib` (`Resources/*.dylib.bin`). A game build that
-carries its own copies in `Frameworks/` gets them replaced once per launcher build (tracked by hash under
-`EchoEmbeddedInGameSHA256:<name>`), so a library update reaches players without a new game IPA. A server
+carries its own `EchoIOS.dylib` in `Frameworks/` gets it replaced once per launcher build (tracked by hash
+under `EchoEmbeddedInGameSHA256:<name>`), so a library update reaches players without a new game IPA. A server
 manifest that lists the same file is applied after that and wins.
+
+`EchoGfx.dylib` is different: it belongs to the build's shader paks, so the build's own copy is kept
+(`EmbeddedFile.replacesInGame`). Launcher builds 8fa8c55 to 81b70f9 replaced it with EchoGfx 12, which crashed
+builds made for EchoGfx 14 (v52 and later) as soon as PC shaders were on; that one copy is the only one the
+launcher still replaces, with the EchoGfx 14 it ships now (taken from the v54 game build). `EchoIOS.dylib.bin`
+must be the `EchoIOS-gfx.dylib` build, the one that loads EchoGfx.
 
 Settings, Game, "Edit styles in the locker" writes `LockerStyles=0/1` to the game's
 `Documents/echo-ios.ini`, which EchoIOS reads at start.
