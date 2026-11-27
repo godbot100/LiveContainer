@@ -91,6 +91,9 @@ carries its own `EchoIOS.dylib` in `Frameworks/` gets it replaced once per launc
 under `EchoEmbeddedInGameSHA256:<name>`), so a library update reaches players without a new game IPA. A server
 manifest that lists the same file is applied after that and wins.
 
+Installing the game build again brings its own libraries back; the launcher notices by the install time of the
+game bundle (`EchoEmbeddedInGameInstall:<name>`) and replaces `EchoIOS.dylib` again.
+
 `EchoGfx.dylib` is different: it belongs to the build's shader paks, so the build's own copy is kept
 (`EmbeddedFile.replacesInGame`). Launcher builds 8fa8c55 to 81b70f9 replaced it with EchoGfx 12, which crashed
 builds made for EchoGfx 14 (v52 and later) as soon as PC shaders were on; that one copy is the only one the

@@ -27,6 +27,7 @@ final class EchoStore: ObservableObject {
     static let installedGameKey = "EchoInstalledGameSHA256"
     static let embeddedKeyPrefix = "EchoEmbeddedSHA256:"
     static let embeddedInGameKeyPrefix = "EchoEmbeddedInGameSHA256:"
+    static let embeddedInGameStampPrefix = "EchoEmbeddedInGameInstall:"
     static let manifestCacheKey = "EchoManifestCache"
     static let serverPaksKey = "EchoServerPaks"
     static let managedArgumentsKey = "EchoManagedArguments"
@@ -206,6 +207,16 @@ final class EchoStore: ObservableObject {
         return rows.prefix(count).map { String($0.prefix(220)) }.joined(separator: "\n")
     }
 
+    /// Changes whenever the game build is installed again: when its bundle folder and Info.plist were created.
+    private var gameInstallStamp: String {
+        guard let bundle = gameBundle else { return "" }
+        let created = { (url: URL) -> Int in
+            let date = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.creationDate] as? Date
+            return Int(date?.timeIntervalSince1970 ?? 0)
+        }
+        return "\(created(bundle)):\(created(bundle.appendingPathComponent("Info.plist")))"
+    }
+
     private var clientFolder: URL {
         if gameCarriesClient, let frameworks = gameFrameworks { return frameworks }
         return tweakFolder
@@ -255,6 +266,16 @@ final class EchoStore: ObservableObject {
                     }
                     let embeddedHash = try EchoStore.sha256(of: source)
                     let inGameKey = EchoStore.embeddedInGameKeyPrefix + file.name
+                    let stampKey = EchoStore.embeddedInGameStampPrefix + file.name
+                    // a build installed again brings its own copies back, so what was recorded for the old install no longer holds
+                    let recordedStamp = UserDefaults.standard.string(forKey: stampKey)
+                    // signing changes a library's bytes, so the hash this launcher recorded when it placed one counts too
+                    let placedHash = recordedStamp == nil || recordedStamp == gameInstallStamp
+                        ? UserDefaults.standard.string(forKey: inGameKey) ?? "" : ""
+                    if recordedStamp != gameInstallStamp {
+                        UserDefaults.standard.removeObject(forKey: inGameKey)
+                        UserDefaults.standard.set(gameInstallStamp, forKey: stampKey)
+                    }
                     if present, UserDefaults.standard.string(forKey: inGameKey) == embeddedHash { continue }
                     let current = fm.fileExists(atPath: target.enabled.path) ? target.enabled : target.disabled
                     let currentHash = present ? (try? EchoStore.sha256(of: current)) : nil
@@ -262,8 +283,6 @@ final class EchoStore: ObservableObject {
                         UserDefaults.standard.set(embeddedHash, forKey: inGameKey)
                         continue
                     }
-                    // signing changes a library's bytes, so the hash this launcher recorded when it placed one counts too
-                    let placedHash = UserDefaults.standard.string(forKey: inGameKey) ?? ""
                     if present, let replaceable = file.replacesInGame,
                        !replaceable.contains(currentHash ?? ""), !replaceable.contains(placedHash) { continue }
                     for old in [target.enabled, target.disabled] where fm.fileExists(atPath: old.path) {
