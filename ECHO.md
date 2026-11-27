@@ -83,3 +83,13 @@ Everything published on the dashboard (Paks, iOS) reaches players at the next la
 - **Launch arguments**: the manifest's `all`, `echo` and `stock` lists are written into `ue4commandline.txt`; arguments
   the server stops listing are taken out again.
 - The last manifest is cached, so an offline launch keeps the same content. A failed check never blocks PLAY.
+
+## Client library updates
+
+The launcher ships its own `EchoIOS.dylib` and `EchoGfx.dylib` (`Resources/*.dylib.bin`). A game build that
+carries its own copies in `Frameworks/` gets them replaced once per launcher build (tracked by hash under
+`EchoEmbeddedInGameSHA256:<name>`), so a library update reaches players without a new game IPA. A server
+manifest that lists the same file is applied after that and wins.
+
+Settings, Game, "Edit styles in the locker" writes `LockerStyles=0/1` to the game's
+`Documents/echo-ios.ini`, which EchoIOS reads at start.
