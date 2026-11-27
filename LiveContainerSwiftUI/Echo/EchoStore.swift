@@ -9,6 +9,8 @@
 //  Where the libraries live depends on the game build:
 //  - A build whose executable already loads Frameworks/EchoIOS.dylib (every Echo test IPA): the libraries
 //    inside the installed game's Frameworks folder are the ones that load, so they are managed there.
+//    Each new launcher build replaces them once with the copies it ships, so a library update reaches the
+//    game without a new game IPA; a server manifest that lists the library still has the last word.
 //    EchoGfx is loaded weakly by EchoIOS, so renaming it to ".disabled" is what switches to the stock renderer.
 //  - A plain build: the libraries go in LiveContainer's global tweak folder, where ".disabled" is skipped too.
 //
@@ -23,6 +25,7 @@ final class EchoStore: ObservableObject {
     static let rendererKey = "EchoRenderer"
     static let installedGameKey = "EchoInstalledGameSHA256"
     static let embeddedKeyPrefix = "EchoEmbeddedSHA256:"
+    static let embeddedInGameKeyPrefix = "EchoEmbeddedInGameSHA256:"
     static let manifestCacheKey = "EchoManifestCache"
     static let serverPaksKey = "EchoServerPaks"
     static let managedArgumentsKey = "EchoManagedArguments"
@@ -240,10 +243,21 @@ final class EchoStore: ObservableObject {
                         }
                         UserDefaults.standard.removeObject(forKey: key)
                     }
-                    if present { continue }
+                    let embeddedHash = try EchoStore.sha256(of: source)
+                    let inGameKey = EchoStore.embeddedInGameKeyPrefix + file.name
+                    if present, UserDefaults.standard.string(forKey: inGameKey) == embeddedHash { continue }
+                    let current = fm.fileExists(atPath: target.enabled.path) ? target.enabled : target.disabled
+                    if present, (try? EchoStore.sha256(of: current)) == embeddedHash {
+                        UserDefaults.standard.set(embeddedHash, forKey: inGameKey)
+                        continue
+                    }
+                    for old in [target.enabled, target.disabled] where fm.fileExists(atPath: old.path) {
+                        try fm.removeItem(at: old)
+                    }
                     try fm.copyItem(at: source, to: target.enabled)
+                    UserDefaults.standard.set(embeddedHash, forKey: inGameKey)
                     changedGame = true
-                    status = "Added the built-in \(file.name) to the game"
+                    status = present ? "Updated \(file.name) in the game" : "Added the built-in \(file.name) to the game"
                 } else {
                     let embeddedHash = try EchoStore.sha256(of: source)
                     if present, UserDefaults.standard.string(forKey: key) == embeddedHash { continue }
@@ -266,6 +280,41 @@ final class EchoStore: ObservableObject {
             status = error.localizedDescription
         }
         return changedGame
+    }
+
+    // MARK: client settings
+
+    /// EchoIOS reads its switches from "Documents/echo-ios.ini" in the game's data folder ("Key=1" lines).
+    private static func clientSettingsFile(in container: URL) -> URL {
+        container.appendingPathComponent("Documents/echo-ios.ini")
+    }
+
+    func clientSetting(_ key: String, in container: URL?, fallback: Bool) -> Bool {
+        guard let container, let text = try? String(contentsOf: EchoStore.clientSettingsFile(in: container), encoding: .utf8) else { return fallback }
+        for line in text.components(separatedBy: .newlines) where line.hasPrefix(key + "=") {
+            let value = line.dropFirst(key.count + 1).trimmingCharacters(in: .whitespaces)
+            return value == "1" || value.lowercased() == "true"
+        }
+        return fallback
+    }
+
+    func setClientSetting(_ key: String, _ on: Bool, in container: URL?) {
+        guard let container else {
+            status = "Start the game once first, then this can be changed"
+            return
+        }
+        let file = EchoStore.clientSettingsFile(in: container)
+        let text = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
+        var lines = text.components(separatedBy: .newlines).filter { !$0.hasPrefix(key + "=") }
+        while lines.last == "" { lines.removeLast() }
+        lines.append("\(key)=\(on ? 1 : 0)")
+        do {
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try (lines.joined(separator: "\n") + "\n").write(to: file, atomically: true, encoding: .utf8)
+            status = "Saved. It takes effect the next time the game starts."
+        } catch {
+            status = error.localizedDescription
+        }
     }
 
     // MARK: renderer

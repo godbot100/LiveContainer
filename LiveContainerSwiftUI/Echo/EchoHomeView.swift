@@ -56,6 +56,7 @@ struct EchoHomeView: View {
     @State private var launchError = ""
     @State private var showPassword = false
     @State private var report = ""
+    @State private var lockerStyles = true
     @State private var graphicsWarning: EchoGraphicsChange?
 
     private var game: LCAppModel? {
@@ -445,6 +446,20 @@ struct EchoHomeView: View {
             graphicsControls
             Text("Stock uses the game's own iOS shaders and switches off EchoGfx and the PC shader, material and texture paks. Echo switches them back on. Changes take effect the next time the game starts.")
                 .font(EchoTheme.label(12)).foregroundColor(EchoTheme.dim)
+            EchoSectionTitle(text: "In game")
+            Toggle(isOn: Binding(get: { lockerStyles }, set: { on in
+                lockerStyles = on
+                store.setClientSetting("LockerStyles", on, in: gameContainer)
+            })) {
+                Text("EDIT STYLES IN THE LOCKER").font(EchoTheme.caps(14)).foregroundColor(.white)
+            }
+            .tint(EchoTheme.accent)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .echoSurface()
+            .onAppear { lockerStyles = store.clientSetting("LockerStyles", in: gameContainer, fallback: true) }
+            Text("Adds EDIT STYLE to outfits that have styles. With a controller: R2 opens it, the d-pad changes the style, A saves. Switch it off if the game stops starting or the locker misbehaves.")
+                .font(EchoTheme.label(12)).foregroundColor(EchoTheme.dim)
             EchoSectionTitle(text: "Server")
             TextField("https://", text: $store.manifestAddress)
                 .keyboardType(.URL)
@@ -563,15 +578,19 @@ struct EchoHomeView: View {
         launchError = "The game did not start. Open Settings, Advanced, App list and start it there once, then try again."
     }
 
-    private func loadReport() {
+    /// The game's data folder, once the game has run.
+    private var gameContainer: URL? {
+        guard let folder = game?.uiDefaultDataFolder, !folder.isEmpty else { return nil }
         var container: URL?
-        if let folder = game?.uiDefaultDataFolder, !folder.isEmpty {
-            for root in [LCPath.dataPath, LCPath.lcGroupDataPath] {
-                let candidate = root.appendingPathComponent(folder)
-                if FileManager.default.fileExists(atPath: candidate.path) { container = candidate }
-            }
+        for root in [LCPath.dataPath, LCPath.lcGroupDataPath] {
+            let candidate = root.appendingPathComponent(folder)
+            if FileManager.default.fileExists(atPath: candidate.path) { container = candidate }
         }
-        report = store.diagnostics(hideLiveContainer: game?.uiHideLiveContainer ?? false, container: container)
+        return container
+    }
+
+    private func loadReport() {
+        report = store.diagnostics(hideLiveContainer: game?.uiHideLiveContainer ?? false, container: gameContainer)
     }
 
     private func reloadMods() {
