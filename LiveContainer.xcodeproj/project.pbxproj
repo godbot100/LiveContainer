@@ -201,6 +201,8 @@
 				Settings.bundle,
 				universal.js,
 				EchoIOS.dylib.bin,
+				"pakchunkstylesui-iosclient_p.pak.bin",
+				"pakchunkstylesui-iosclient_p.sig.bin",
 				EchoGfx.dylib.bin,
 				EchoBurbankBig.otf,
 				EchoBurbankSmallBlack.otf,

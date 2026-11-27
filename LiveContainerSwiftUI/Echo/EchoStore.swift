@@ -44,6 +44,10 @@ final class EchoStore: ObservableObject {
         EmbeddedFile(name: "EchoGfx.dylib", renderer: "echo"),
     ]
 
+    /// Small content paks shipped inside the launcher and copied into the game's paks folder (stored as
+    /// "<name>.bin"). The styles panel art (tab, button and tile materials, the styles badge) comes this way.
+    static let embeddedPaks = ["pakchunkstylesui-iosclient_p.pak", "pakchunkstylesui-iosclient_p.sig"]
+
     static func savedManifestAddress() -> String {
         let saved = UserDefaults.standard.string(forKey: EchoStore.manifestKey) ?? ""
         return saved.isEmpty ? EchoAPI.defaultBackend + EchoAPI.manifestPath : saved
@@ -267,6 +271,18 @@ final class EchoStore: ObservableObject {
                     try fm.copyItem(at: source, to: target.enabled)
                     UserDefaults.standard.set(embeddedHash, forKey: key)
                     status = "Installed the built-in \(file.name)"
+                }
+            }
+            if let paks = paksFolder, fm.fileExists(atPath: paks.path) {
+                for name in EchoStore.embeddedPaks {
+                    guard let source = Bundle.main.url(forResource: name, withExtension: "bin") else { continue }
+                    let target = paks.appendingPathComponent(name)
+                    if fm.fileExists(atPath: target.path), (try? EchoStore.sha256(of: target)) == (try? EchoStore.sha256(of: source)) { continue }
+                    if fm.fileExists(atPath: target.path) {
+                        try fm.removeItem(at: target)
+                    }
+                    try fm.copyItem(at: source, to: target)
+                    status = "Added \(name) to the game"
                 }
             }
             if let bundle = gameBundle {
